@@ -31,6 +31,7 @@ small-layer
  - [https://github.com/THUDM/ChatGLM-6B](https://github.com/THUDM/ChatGLM-6B)
  - [https://github.com/huggingface/peft](https://github.com/huggingface/peft)
  - [https://github.com/mymusise/ChatGLM-Tuning](https://github.com/mymusise/ChatGLM-Tuning)
+ - [https://github.com/bojone/bert4keras](https://github.com/bojone/bert4keras)
 
 
 ## 推理日志toy

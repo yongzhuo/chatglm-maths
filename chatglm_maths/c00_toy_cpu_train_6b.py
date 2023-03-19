@@ -9,9 +9,10 @@ import logging as logger
 import traceback
 import random
 import math
+import copy
 import sys
 import os
-path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 print(path_root)
 sys.path.append(path_root)
 
@@ -61,8 +62,8 @@ model_save_path = "./fine_tuning"
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
 weight_decay = 5e-4
-lr = 1e-5
-eps = 1e-9
+lr = 2e-5
+eps = 1e-5  # 半精度需要设置大一点
 betas = (0.9, 0.999)
 grad_accum_steps = 1
 stop_epochs = 3
@@ -101,24 +102,33 @@ def load_model_state(path_dir="", model_name="tc.model", device="cpu", model_sav
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
-def sequence_padding(inputs, length=None, padding=0, length_max=2048):
-    """
-        将序列padding到同一长度(当前inputs最长)
-    config:
-        config: dict, enum of parms
-    Returns:
-        tokenizer: class
+def sequence_padding(inputs, length=None, value=0, seq_dims=1, mode='post'):
+    """Numpy函数，将序列padding到同一长度
+    code from https://github.com/bojone/bert4keras/blob/master/bert4keras/snippets.py
     """
     if length is None:
-        length = min(max([len(x) for x in inputs]), length_max)
+        length = np.max([np.shape(x)[:seq_dims] for x in inputs], axis=0)
+    elif not hasattr(length, '__getitem__'):
+        length = [length]
+
+    slices = [np.s_[:length[i]] for i in range(seq_dims)]
+    slices = tuple(slices) if len(slices) > 1 else slices[0]
+    pad_width = [(0, 0) for _ in np.shape(inputs[0])]
+
     outputs = []
     for x in inputs:
-        if len(x) >= length:
-            x = x[:length]
-        else:
-            x = x + [padding] * (length - len(x))
+        x = x[slices]
+        for i in range(seq_dims):
+            if mode == 'post':
+                pad_width[i] = (0, length[i] - np.shape(x)[i])
+            elif mode == 'pre':
+                pad_width[i] = (length[i] - np.shape(x)[i], 0)
+            else:
+                raise ValueError('"mode" argument must be "post" or "pre".')
+        x = np.pad(x, pad_width, 'constant', constant_values=value)
         outputs.append(x)
-    return outputs
+
+    return np.array(outputs)
 def set_random_seed(seed):
     """ 设置随机种子 """
     torch.manual_seed(seed)
@@ -218,7 +228,7 @@ class Generator:
 
     def __iter__(self, len_corpus=50000, max_coeff=100, device="cpu"):
         for idx, _ in enumerate(range(len_corpus)):
-            batch_query = []
+            batch_ids = []
             batch_qtext = []
             batch_qans = []
             for _ in range(batch_size):
@@ -226,20 +236,28 @@ class Generator:
                 prompts = [("问: ", "答: "), ("问题: ", "答案: "), ("计算: ", "回答: "),
                            ("计算题: ", "解答: "), ("口算: ", "解: "), ("简便运算: ", "剖析: "),
                            ("数学题: ", "点拨: "), ("初等数学: ", "解析: ")]
-                prompt = random.choice(prompts)
-                # x_prompt = prompt[0] + x + " " + prompt[1] + " \n [gMASK] " + y
-                # batch_qtext.append(prompt[0] + x + " " + prompt[1] + " \n [gMASK] ")
-                x_prompt = prompt[0] + x + " " + prompt[1] + y
-                batch_qtext.append(prompt[0] + x + " " + prompt[1])
-                batch_query.append(x_prompt)
+                use_pormpts = True
+                if use_pormpts:
+                    prompt = random.choice(prompts)
+                    x = prompt[0] + x + " " + prompt[1] + " "
+                # x_prompt = prompt[0] + x + " " + prompt[1] + " \n [gMASK]" + y
+                # batch_qtext.append(prompt[0] + x + " " + prompt[1] + " \n [gMASK]")
+                x_encode = tokenizer.encode(x)
+                y_encode = tokenizer.encode(y)
+                # x [MASK]/[gMASK] y [eop]
+                input_ids = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
+                batch_ids.append(input_ids)
+                batch_qtext.append(x)
                 batch_qans.append(y)
             if idx < 5:
-                print("batch_query: {}".format(batch_query))
-            input_ids = tokenizer(batch_query, return_tensors="pt", padding="max_length",
-                                  max_length=max([len(b) for b in batch_query])+2, truncation=True).input_ids.to(device)
-            labels = tokenizer(batch_query, return_tensors="pt", padding="max_length", 
-                               max_length=max([len(b) for b in batch_query])+2, truncation=True).input_ids.to(device)
-            inputs= {"input_ids": input_ids, "labels": labels}
+                print("batch_query_0: {}".format(batch_ids[0]))
+            """left-padding
+            RuntimeError: The size of tensor a (40) must match the size of tensor b (27) at non-singleton dimension 0
+            """
+            batch_ids = sequence_padding(np.array(batch_ids), value=tokenizer.pad_token_id, mode="pre")
+            batch_yds = sequence_padding(np.array(copy.deepcopy(batch_ids)), value=-100, mode="pre")  # ignore padding(loss-CE)
+            inputs = {"input_ids": torch.tensor(batch_ids).long().to(device),
+                      "labels": torch.tensor(batch_yds).long().to(device)}
             yield inputs, batch_qtext, batch_qans
 
 
@@ -253,20 +271,38 @@ print("generator_calculate_line: {}".format(generator_line))
 # The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
 chatglm_config = ChatGLMConfig.from_pretrained(pretrained_model_name_or_path)
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
+# tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+text = ("1、2", "3、4")
+# tokens_id = tokenizer.encode_plus(text[0], text[1]).input_ids
+x_encode = tokenizer.encode(text[0])
+y_encode = tokenizer.encode(text[1])
+tokens_id = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
+print(text)
+print("tokenizer.encode_plus: {}".format(tokens_id))
 print("tokenizer.vocab_size: {}".format(tokenizer.vocab_size))
+
+
 # ### test
 # chatglm_config.num_layers = num_layers
 # chatglm_config.torch_dtype = "float16"
 
 ## 字典embedding也很大, 2w图像token, 8w英文token, 5w中文字词token(尝试剔除图片+英文(只保留计算+单词)---待实验?)
 model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
-## 只训练最后一层的参数
-layer_not_freeze = "27"
+# ## 只训练最后一层的参数
+layer_not_freeze = [27]  # [25, 26, 27]  # [str(i) for i in range(27) if i > 15]  # "27"
 for k, v in model.named_parameters():
-    if "lm_head" in k or "final_layernorm" in k:
+    flag_layer = False  # 不冻结的网络层
+    if layer_not_freeze:
+        for layer_i in layer_not_freeze:
+            if "layers.{}.".format(layer_i) in k:
+                flag_layer = True
+
+    if ("lm_head" in k or "final_layernorm" in k):
         v.requires_grad = True
-    elif layer_not_freeze and "layers.{}.".format(layer_not_freeze) in k:
+    elif flag_layer:
         v.requires_grad = True
+    # elif "word_embeddings.weight" in k:
+    #     v.requires_grad = True
     else:
         v.requires_grad = False
 for k, v in model.named_parameters():
