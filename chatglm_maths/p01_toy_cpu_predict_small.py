@@ -242,38 +242,102 @@ class Generator:
 
     def __iter__(self, len_corpus=50000, max_coeff=100, device="cpu"):
         for idx, _ in enumerate(range(len_corpus)):
-            batch_ids = []
+            batch_xds_0 = []
+            batch_xds_1 = []
+            batch_yds = []
+            batch_pos = []
             batch_qtext = []
             batch_qans = []
             for _ in range(batch_size):
                 x, y = self.generate_line(op="+", max_coeff=max_coeff, use_gaussian=True, dim1=1, dim2=2)
-                prompts = [("问: ", "答: "), ("问题: ", "答案: "), ("计算: ", "回答: "),
-                           ("计算题: ", "解答: "), ("口算: ", "解: "), ("简便运算: ", "剖析: "),
-                           ("数学题: ", "点拨: "), ("初等数学: ", "解析: ")]
+                """
+                "gigaword", "cnn_dm", "cnn_dm_original", "xsum":
+                    source_tokens = [cls_id, mask_id] + " Content:"  + " " + source_text
+                "squad_generation":
+                    source_tokens = [cls_id] + source_text.rstrip() + \
+                                    " Question:" + (" " + answer_patten) + \
+                                    [mask_id] + " Answer: " + answer
+                "squad"/"squad_v1":
+                    source_tokens = [cls_id] + " " + source_text.rstrip()+
+                                    " " + question + mask_id, period_id('.')\
+                                    + source_tokens[:max_src_length]
+                                    + " " + target_text + [eop_id]
+                "cmrc":
+                    source_tokens = [cls_id] + "问题：" + question + "答案：" + \
+                                    [mask_id] + source_tokens[:max_src_length]
+                """
+                # # +[ID_SOP] + y_encode[:-2]
+                # # train, x: [cls, _], x, [MASK]/[gMASK], [sop, _], y
+                # #        y: y, [eop]
+                # # predict, x: [cls, _], x, [MASK]/[gMASK], [sop]
+                # source_tokens = [ID_CLS] + x_encode[:-2] + [ID_gMASK]
+                # target_tokens = y_encode[:-2] + [ID_EOP]
+                # max_src_length, max_tgt_length = args.src_seq_length, args.tgt_seq_length
+                # sep = len(source_tokens)
+                # position_ids = list(range(len(source_tokens)))
+                # block_position_ids = [0] * len(source_tokens)
+                # mask_pos = source_tokens.index(ID_gMASK)
+                # loss_mask = [1] * len(target_tokens)
+                # if len(target_tokens) > max_tgt_length:
+                #     target_tokens = target_tokens[:max_tgt_length]
+                # loss_mask = [1] * len(target_tokens)
+                # if len(target_tokens) < max_tgt_length:
+                #     loss_mask += [0] * (max_tgt_length - len(target_tokens))
+                #     target_tokens += [pad_id] * (max_tgt_length - len(target_tokens))
+                # tokens = source_tokens + [ID_SOP] + target_tokens[:-1]
+                # loss_mask = [0] * len(source_tokens) + loss_mask
+                # target_ids = [0] * len(source_tokens) + target_tokens
+                # position_ids += [mask_pos] * len(target_tokens)
+                # if 1:  # no_block_position:
+                #     block_position_ids += [1] * len(target_tokens)
+                # else:
+                #     block_position_ids += list(range(1, len(target_tokens) + 1))
+                # position_ids = [position_ids, block_position_ids]
+
+                # inputs = {"input_ids": torch.tensor(batch_ids).long().to(device),
+                #           "labels": torch.tensor(batch_yds).long().to(device)}
+                prompts = [("问:", "答:"), ("问题:", "答案:"), ("计算: ", "回答:"),
+                           ("计算题:", "解答:"), ("口算:", "解:"), ("简便运算: ", "剖析:"),
+                           ("数学题:", "点拨:"), ("初等数学: ", "解析:")]
                 use_pormpts = True
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = prompt[0] + x + " " + prompt[1] + " "
-                # x_prompt = prompt[0] + x + " " + prompt[1] + " \n [gMASK]" + y
-                # batch_qtext.append(prompt[0] + x + " " + prompt[1] + " \n [gMASK]")
-                x_encode = tokenizer.encode(x)
+                    x = prompt[0] + x + prompt[1]
+                x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)
-                # x [MASK]/[gMASK] y [eop]
-                input_ids = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
-                batch_ids.append(input_ids)
+
+                input_xds_0 = [ID_CLS] + x_encode[:-2] + [ID_gMASK]
+                input_xds_1 = [ID_SOP] + y_encode[:-2]
+                input_yds = y_encode[:-2] + [ID_EOP]
+                if len(input_xds_0) + len(input_xds_1) > MAX_QA_LENGTH:
+                    input_xds_0 = [ID_CLS] + x_encode[:-2][:MAX_Q_LENGTH] + [ID_gMASK]
+                    input_xds_1 = [ID_SOP] + y_encode[:-2][:MAX_Q_LENGTH]
+                    input_yds = y_encode[:-2][::MAX_A_LENGTH] + [ID_EOP]
+                batch_xds_0.append(input_xds_0)
+                batch_xds_1.append(input_xds_1)
+                batch_yds.append(input_yds)
                 batch_qtext.append(x)
                 batch_qans.append(y)
-            if idx < 5:
-                print("batch_query_0: {}".format(batch_ids[0]))
             """left-padding
             RuntimeError: The size of tensor a (40) must match the size of tensor b (27) at non-singleton dimension 0
             """
-            batch_ids = sequence_padding(np.array(batch_ids), value=tokenizer.pad_token_id, mode="pre")
-            batch_yds = sequence_padding(np.array(copy.deepcopy(batch_ids)), value=-100,
-                                         mode="pre")  # ignore padding(loss-CE)
-            inputs = {"input_ids": torch.tensor(batch_ids).long().to(device),
-                      "labels": torch.tensor(batch_yds).long().to(device)}
+            batch_ids_0 = sequence_padding(batch_xds_0, value=tokenizer.pad_token_id, mode="post")
+            batch_ids_1 = sequence_padding(batch_xds_1, value=tokenizer.pad_token_id, mode="post")
+            batch_yds = sequence_padding(batch_yds, value=-100, mode="post")  # ignore padding(loss-CE)
+            batch_ids = np.hstack((batch_ids_0, batch_ids_1))
+            length_batch_ids = np.max([np.shape(x)[:1] for x in batch_ids], axis=0)[0]
+            length_batch_yds = np.max([np.shape(x)[:1] for x in batch_yds], axis=0)[0]
+            batch_yds = np.hstack((np.array([[-100] * (length_batch_ids - length_batch_yds)] * len(batch_yds)), batch_yds))
+            if idx < 5:
+                print("batch_ids_0: {}".format(batch_ids[0]))
+                print("batch_yds_0: {}".format(batch_yds[0]))
+
+            inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long(),
+                      # "position_ids": torch.tensor(batch_position_ids).long().to(device),
+                      # "attention_mask": torch.tensor(batch_attention_mask).long().to(device),
+                      "labels": torch.tensor(batch_yds.astype(np.int64)).long()}
             yield inputs, batch_qtext, batch_qans
+
 
 
 ## 构建算式
@@ -287,6 +351,20 @@ tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
 # ### test
 # chatglm_config.num_layers = num_layers
 # chatglm_config.torch_dtype = "float16"
+MAX_Q_LENGTH = 1024 - 2
+MAX_A_LENGTH = 1024 - 2
+MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
+ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
+ID_SEP = tokenizer.sp_tokenizer["<pad>"]
+ID_PAD = tokenizer.sp_tokenizer["<pad>"]
+ID_MASK = tokenizer.sp_tokenizer["[MASK]"]
+ID_gMASK = tokenizer.sp_tokenizer["[gMASK]"]
+ID_sMASK = tokenizer.sp_tokenizer["[sMASK]"]
+ID_SPACE = tokenizer.sp_tokenizer["▁"]
+ID_SOP = tokenizer.sp_tokenizer["<sop>"]
+ID_EOP = tokenizer.sp_tokenizer["<eop>"]
+ID_S1 = tokenizer.sp_tokenizer["<s>"]
+ID_S2 = tokenizer.sp_tokenizer["</s>"]
 
 model = ChatGLMForConditionalGeneration(chatglm_config)
 load_model_state(model_save_path=model_save_path)
@@ -328,5 +406,12 @@ while True:
 
 """
 
-
+"""
+设鸡有x只，兔子有y只已知鸡和兔一共有87个头,229条脚
+根据题意可得：
+x+y=87
+3x+2y=229
+解方程组得：x=45,y=32
+所以答案为：笼子里有45只鸡，32只兔。
+"""
 

@@ -133,15 +133,15 @@ class SPTokenizer:
         return tokens if add_dummy_prefix else tokens[2:]
 
     def decode(self, text_ids: List[int], special_tokens=False) -> str:
-        # text = ""
+        text = ""
         ids = [int(_id) - self.num_image_tokens for _id in text_ids if int(_id) >= self.num_image_tokens]
-        text = self._get_text_tokenizer(encode_special_tokens=special_tokens).decode(ids)
-        # for ids_i in ids:
-        #     try:
-        #         text += self._get_text_tokenizer(encode_special_tokens=special_tokens).decode([ids_i])
-        #     except Exception as e:
-        #         # print(traceback.print_exc())
-        #         print("decode_error_id: {}".format(ids_i))
+        # text = self._get_text_tokenizer(encode_special_tokens=special_tokens).decode(ids)
+        for ids_i in ids:
+            try:
+                text += self._get_text_tokenizer(encode_special_tokens=special_tokens).decode([ids_i])
+            except Exception as e:
+                print(traceback.print_exc())
+                print("decode_error_id: {}".format(ids_i))
         text = text.replace("<n>", "\n")
         text = text.replace(SPTokenizer.get_tab_token(), "\t")
         for i in range(2, self.max_blank_length + 1):

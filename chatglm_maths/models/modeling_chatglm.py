@@ -765,7 +765,8 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         return attention_mask
 
     def get_position_ids(self, seq, mask_position, device, gmask=False):
-        context_length = seq.index(150004) + 1
+        # context_length = seq.index(150004) + 1
+        context_length = len(seq)
         if self.position_encoding_2d:
             seq_length = seq.index(150004)
             position_ids = torch.arange(context_length, dtype=torch.long, device=device)
@@ -1091,7 +1092,7 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
              do_sample=True, top_p=0.7, temperature=0.95, **kwargs):
         if history is None:
             history = []
-        gen_kwargs = {"max_length": max_length, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p,
+        gen_kwargs = {"max_new_tokens": max_length, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p,
                       "temperature": temperature, **kwargs}
         if not history:
             prompt = query
