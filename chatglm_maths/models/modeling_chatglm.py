@@ -601,6 +601,7 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
     """
 
     is_parallelizable = True
+    model_parallel = True
     supports_gradient_checkpointing = False
     config_class = ChatGLMConfig
     base_model_prefix = "transformer"
@@ -989,11 +990,13 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
 
             if past is None:
                 past = past_key_values
-            return {
+            inputs_dict = {
                 "input_ids": last_token,
                 "past_key_values": past,
                 "position_ids": position_ids,
             }
+            # print("inputs_dict: {}".format(inputs_dict))
+            return inputs_dict
         else:
             attention_mask, position_ids = self.get_masks_and_position_ids(
                 seq=seq,
@@ -1003,12 +1006,14 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
                 gmask=use_gmask
             )
 
-            return {
+            inputs_dict = {
                 "input_ids": input_ids,
                 "past_key_values": past,
                 "position_ids": position_ids,
                 "attention_mask": attention_mask
             }
+            # print("inputs_dict: {}".format(inputs_dict))
+            return inputs_dict
 
     def forward(
             self,
@@ -1089,7 +1094,7 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
 
     @torch.no_grad()
     def chat(self, tokenizer, query: str, history: List[Tuple[str, str]] = None, max_length: int = 2048, num_beams=1,
-             do_sample=True, top_p=0.7, temperature=0.95, **kwargs):
+             do_sample=True, top_p=0.95, temperature=0.95, **kwargs):
         if history is None:
             history = []
         gen_kwargs = {"max_new_tokens": max_length, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p,
@@ -1118,20 +1123,14 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
     ):
         MASK, gMASK = 150000, 150001
         bos, eos = 150004, 150005
-
         if "eos_token_id" not in kwargs:
             kwargs["eos_token_id"] = eos
-
         stop = False
-
         return_seqs = []
-
         while True:
             output_ids = super().generate(**kwargs)
-
             return_seqs = []
             max_length = 0
-
             for i in range(output_ids.shape[0]):
                 output_seq = output_ids[i].tolist()
                 mask_token = MASK if MASK in output_seq else gMASK
@@ -1151,15 +1150,11 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
                 return_seqs[i] = [0] * (max_length - len(return_seqs[i])) + return_seqs[i]  # padding
                 if mask_token not in return_seqs[i]:
                     stop = True
-
             if stop:
                 break
-
             for return_seq in return_seqs:
                 return_seq += [bos]
-
             kwargs['input_ids'] = torch.tensor(return_seqs, dtype=torch.long, device=kwargs['input_ids'].device)
-
         return torch.tensor(return_seqs, dtype=torch.long, device=kwargs['input_ids'].device)
 
     def quantize(self, bits: int):

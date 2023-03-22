@@ -1,5 +1,31 @@
 # chatglm-maths
-chatglm-6b微调, 样本为自动生成的整数/小数加减乘除运算, 可cpu 
+chatglm-6b微调/推理, 样本为自动生成的整数/小数加减乘除运算, 可gpu/cpu
+chatglm-6b fine-tuning/inference, The sample is an automatically generated, integer/decimal of add, sub, mul and div operation, that can be gpu/cpu
+
+
+## 数据集-中文
+ - [https://github.com/tatsu-lab/stanford_alpaca](https://github.com/tatsu-lab/stanford_alpaca)
+ - [https://github.com/LianjiaTech/BELLE](https://github.com/LianjiaTech/BELLE)
+ - [https://github.com/carbonz0/alpaca-chinese-dataset](https://github.com/carbonz0/alpaca-chinese-dataset)
+
+
+## 踩坑
+```python
+1. eps=1e-5(不要改小), 单精度float16, 以及LN采用的是Sandwich-LN(Sandwich LayerNorm), 分支的ATtention前后都有LN, 目的是大模型为了防止梯度溢出等;
+2. 模型输入输出, 默认的tokenization_chatglm.py/modeling_chatglm.py不能用, 因为那是完全为生成generate设置的, 需要自己写好所有缩入参数, 或者机子改成适配的;
+   2.1 ChatGLMModel中, get_masks()正常, get_position_ids()函数中‘context_length = seq.index(150004) + 1’ 改为 ‘context_length = len(seq)’;
+   2.2 训练输入input_ids格式暂定为(训练后post-padding, 推理前pre-padding[tokenization_chatglm.py默认pre-padding])
+              a1. x1: [CLS] + prompt_1 + " " + text_1 + " " + prompt_2 + [gMASK] + [PAD]*N(post-padding)
+              a2. x2: [SOP] + " " + text_2 + [PAD]*N(post-padding)
+              a.  x = x1 + x2
+   2.3 训练输入label_ids格式暂定为(CrossEntropyLoss默认忽略-100不参与计算loss)  
+              b.  y = [-100]*len(x) + " " + text_2 + [EOP] + [-100]*N(post-padding)
+   2.4 可参考GLM-1, https://github.com/THUDM/GLM/blob/main/tasks/seq2seq/dataset.py
+3. 注意chatglm-6b权重是float16的, 不过计算loss时候会转成float32计算, 最后loss再转回float16更新梯度;
+4. ChatGLMTokenizer有时候会报奇奇怪怪的错误, 建议生成时候设置max_new_tokens, 最大{"max_new_tokens": 2048}; decode有时候会出现不存在id;
+5. 低秩自适应LORA, RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
+   尝试 transformers升级到最新, get_peft_model后再.cuda(), device_map={'':torch.cuda.current_device()}, 
+```
 
 ## 环境配置
 ```shell
@@ -29,6 +55,9 @@ small-layer
 
 ## 参考/感谢
  - [https://github.com/THUDM/ChatGLM-6B](https://github.com/THUDM/ChatGLM-6B)
+ - [https://github.com/THUDM/GLM](https://github.com/THUDM/GLM)
+ - [https://github.com/tatsu-lab/stanford_alpaca](https://github.com/tatsu-lab/stanford_alpaca)
+ - [https://github.com/LianjiaTech/BELLE](https://github.com/LianjiaTech/BELLE)
  - [https://github.com/huggingface/peft](https://github.com/huggingface/peft)
  - [https://github.com/mymusise/ChatGLM-Tuning](https://github.com/mymusise/ChatGLM-Tuning)
  - [https://github.com/bojone/bert4keras](https://github.com/bojone/bert4keras)

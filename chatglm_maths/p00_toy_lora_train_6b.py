@@ -9,14 +9,15 @@ import logging as logger
 import traceback
 import random
 import math
+import time
 import copy
 import sys
 import os
 path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 print(path_root)
 sys.path.append(path_root)
-CUDA_VISIBLE_DEVICES = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
+CUDA_VISIBLE_DEVICES = "0"
+# os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 # cpu_nums = "9"
 # os.environ["OMP_NUM_THREADS"] = cpu_nums  # export OMP_NUM_THREADS=1
 # os.environ["OPENBLAS_NUM_THREADS"] = cpu_nums  # export OPENBLAS_NUM_THREADS=1
@@ -25,14 +26,17 @@ os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 # os.environ["NUMEXPR_NUM_THREADS"] = cpu_nums  # export NUMEXPR_NUM_THREADS=1
 os.environ["USE_TORCH"] = "1"
 
+from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_int8_training
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm, trange
+import torch.nn as nn
 import numpy as np
+import datasets
 import torch
 
 from chatglm_maths.models.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
 from chatglm_maths.models.tokenization_chatglm import ChatGLMTokenizer
-from transformers import AutoTokenizer
 
 
 is_toy = False
@@ -56,7 +60,7 @@ else:
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
 
-model_save_path = "./fine_tuning_c00_gpu"
+model_save_path = "./fine_tuning_lora"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
@@ -130,13 +134,6 @@ def sequence_padding(inputs, length=None, value=0, seq_dims=1, mode='post'):
         outputs.append(x)
 
     return np.array(outputs)
-def set_random_seed(seed):
-    """ 设置随机种子 """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    if use_cuda and torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
     """  验证  """
     from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -178,6 +175,13 @@ def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
     print(score_dict)
     score_avg = round(sum(list(score_dict.values()))/len(score_dict.keys()), 5)
     return score_avg, score_dict
+def set_random_seed(seed):
+    """ 设置随机种子 """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if use_cuda and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 class Generator:
     """
     Base class for encoders, encodes and decodes matrices
@@ -333,12 +337,11 @@ class Generator:
 
             # inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long().to(device),
             #           "labels": torch.tensor(batch_yds.astype(np.int64)).long().to(device)}
-            inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long().cuda(),
+            inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long().to(device),
                       # "position_ids": torch.tensor(batch_position_ids).long().to(device),
                       # "attention_mask": torch.tensor(batch_attention_mask).long().to(device),
-                      "labels": torch.tensor(batch_yds.astype(np.int64)).long().cuda()}
+                      "labels": torch.tensor(batch_yds.astype(np.int64)).long().to(device)}
             yield inputs, batch_qtext, batch_qans
-
 
 
 set_random_seed(seed)
@@ -351,9 +354,7 @@ print("generator_calculate_line: {}".format(generator_line))
 # The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
 chatglm_config = ChatGLMConfig.from_pretrained(pretrained_model_name_or_path)
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
-# tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
 text = ("1、2", "3、4")
-# tokens_id = tokenizer.encode_plus(text[0], text[1]).input_ids
 x_encode = tokenizer.encode(text[0])
 y_encode = tokenizer.encode(text[1])
 tokens_id = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
@@ -375,148 +376,64 @@ ID_EOP = tokenizer.sp_tokenizer["<eop>"]
 ID_S1 = tokenizer.sp_tokenizer["<s>"]
 ID_S2 = tokenizer.sp_tokenizer["</s>"]
 
-# ### test
-# chatglm_config.num_layers = num_layers
-# chatglm_config.torch_dtype = "float16"
 
 ## 字典embedding也很大, 2w图像token, 8w英文token, 5w中文字词token(尝试剔除图片+英文(只保留计算+单词)---待实验?)
 model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
-# ## 只训练最后一层的参数
-layer_not_freeze = [27]  # [25, 26, 27]  # [str(i) for i in range(27) if i > 15]  # "27"
-for k, v in model.named_parameters():
-    flag_layer = False  # 不冻结的网络层
-    if layer_not_freeze:
-        for layer_i in layer_not_freeze:
-            if "layers.{}.".format(layer_i) in k:
-                flag_layer = True
-
-    if ("lm_head" in k or "final_layernorm" in k):
-        v.requires_grad = True
-    elif flag_layer:
-        v.requires_grad = True
-    # elif "word_embeddings.weight" in k:
-    #     v.requires_grad = True
-    else:
-        v.requires_grad = False
-for k, v in model.named_parameters():
-    print(k, v.requires_grad)
-
+# model = model.half().to(device)
+print("model cuda ok!")
+# model = prepare_model_for_int8_training(model, use_gradient_checkpointing=False,
+#             layer_norm_names=["input_layernorm", "post_attention_layernorm",])
+# print("prepare_model_for_int8_training!")
+# model.gradient_checkpointing_enable()
+# model.enable_input_require_grads()
+model.is_parallelizable = False
+model.model_parallel = False
+# model.config.use_cache = False
+peft_config = LoraConfig(target_modules=["query_key_value"],
+                         task_type=TaskType.CAUSAL_LM,
+                         inference_mode=False,
+                         lora_dropout=0.1,
+                         lora_alpha=32,
+                         # enable_lora=None,  # Used with `lora.MergedLinear`.
+                         # bias="none",  # "Bias type for Lora. Can be 'none', 'all' or 'lora_only'
+                         r=8,
+)
+model = get_peft_model(model, peft_config)
+# model.device = device
+load_model_state(model_save_path=model_save_path)
 if use_cuda:
-    model = model.half().cuda()  # .to(device)
+    model = model.half().to(device)
     print("model cuda ok!")
 else:
     model = model.bfloat16()
+model.eval()
+score_avg, score_dict = evaluate(model, tokenizer, len_corpus=batch_size,
+                                 device=device)  # 验证数据个数
 
 
-print("model.chat start")
-response, history = model.chat(tokenizer, generator_line, max_length=max_length, history=[])
-print(str(response).encode("utf-8", "ignore").decode("utf-8", "ignore"))
-
-# 实验, 不计算, 1层
-# time.sleep(300000)
-# layer-1-init == 3588MiB  3856MiB
-# layer-2-init == 3972MiB  4156MiB
-# layer-3-init == 4356MiB  4636MiB
-# 每增加一层: 4356-3972 = 3972-3588 = 384M
-
-####   实验, 计算, 1层
-# count = 0
-# for inputs, batch_ans in generator.__iter__(len_corpus, max_coeff, device):
-#     outputs = model(**inputs)
-#     loss = outputs.loss / grad_accum_steps
-#     count += 1
-#     if count > 5:
-#         import time
-#         time.sleep(300000)
-#     import time
-#     time.sleep(300000)
+while True:
+    time_start = time.time()
+    history = []
+    print("请输入:")
+    ques = input()
+    print("请稍等...")
+    try:
+        if ques.strip().upper() == "CLEAR":
+            history = []
+            print("clear ok")
+            continue
+        else:
+            response, history = model.chat(tokenizer=tokenizer, query=ques, history=history, max_length=max_length,
+                                           num_beams=1, do_sample=True, top_p=0.7, temperature=0.95)
+            res_ende = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
+            print(res_ende)
+    except Exception as e:
+        print(str(e))
+    print(time.time()-time_start)
 
 
-params_no_decay = ["LayerNorm.weight", "bias"]
-parameters_no_decay = [
-    {"params": [p for n, p in model.named_parameters() if not any(pnd in n for pnd in params_no_decay)],
-     "weight_decay": weight_decay},
-    {"params": [p for n, p in model.named_parameters() if any(pnd in n for pnd in params_no_decay)],
-     "weight_decay": 0.0}
-    ]
-optimizer = AdamW(parameters_no_decay, lr=lr, betas=betas, eps=eps)
-# from lion_pytorch import Lion
-# optimizer = Lion(parameters_no_decay, lr=lr)
-# optimizer = torch.optim.SGD(parameters_no_decay, lr=lr, momentum=0.9, dampening=0.5, nesterov=False)
 
 
-# 训练轮次
-times_batch_size = len_corpus // grad_accum_steps // batch_size
-num_training_steps = int(times_batch_size * epochs)
-evaluate_steps = int(times_batch_size*0.382) if not evaluate_steps else evaluate_steps
-# 如果选择-1不设置则为 半个epoch
-num_warmup_steps = int((len_corpus // grad_accum_steps // 2)) if warmup_steps == -1 else warmup_steps
-scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)
-
-epochs_store = []
-global_steps = 0
-best_mertics = 0
-best_report = ""
-
-# import torch.nn.functional as F
-# loss_ce = F.cross_entropy
-loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-for epochs_i in trange(epochs, desc="epoch"):  # epoch
-    print("epochs: ".format(epochs_i))
-    model.train()  # train-type
-    pabr = tqdm(total=times_batch_size, desc="epoch_{}_step".format(epochs_i))
-    for idx, (inputs, batch_qtext, batch_qans) in enumerate(generator.__iter__(len_corpus, max_coeff, device)):  # step
-        pabr.update(1)
-        labels = inputs.get("labels")
-        inputs.pop("labels")
-        outputs = model(**inputs)
-        ###   loss
-        lm_logits = outputs.logits
-        dtype = lm_logits.dtype
-        lm_logits = lm_logits.to(torch.float32)
-        # labels = labels.to(torch.float32)
-        # Shift so that tokens < n predict n
-        shift_logits = lm_logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        logits_1 = shift_logits.view(-1, shift_logits.size(-1))
-        logits_2 = shift_labels.view(-1)
-        # print(logits_1.detach().cpu().numpy())
-        # print(logits_2.detach().cpu().numpy())
-        loss = loss_fct(logits_1, logits_2)
-        # loss_2 = loss_ce(logits_1, logits_2, ignore_index=-100)
-        # print(loss.detach().cpu().numpy())
-        # print(loss_2.detach().cpu().numpy())
-        lm_logits = lm_logits.to(dtype)
-        loss = loss.to(dtype) / grad_accum_steps
-        # loss = outputs.loss / grad_accum_steps
-        loss.backward()
-        global_steps += 1
-        if idx < 5 or idx % logger_steps == 0:
-            print("epoch_global: {}, step_global: {}, step: {}, loss: {}".format(epochs_i, global_steps, idx, loss))
-        #  梯度累计
-        if (idx + 1) % grad_accum_steps == 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-
-        if epochs_i == 0 and idx+1 >= len_corpus:
-            save_model_state(model, chatglm_config, model_save_path)
-        # 评估算法/打印日志/存储模型, 1个epoch/到达保存的步数/或者是最后一轮最后一步
-        if (evaluate_steps > 0 and global_steps % evaluate_steps == 0) or (epochs_i > 0 and idx == 0) \
-                or (epochs_i + 1 == epochs and (idx + 1) >= len_corpus):
-            score_avg, score_dict = evaluate(model, tokenizer, len_corpus=batch_size, device=device)  # 验证数据个数
-            print("epoch_global: {}, step_global: {}, step: {}".format(epochs_i, global_steps, idx))
-            print("best_score_avg: {}\n".format(score_avg))
-            print("current_mertics: {}".format(score_dict))
-            model.train()
-            if score_avg > best_mertics:  # 只保留最优的指标
-                epochs_store.append((epochs_i, idx))
-                best_mertics = score_avg
-                save_model_state(model, chatglm_config, model_save_path)
-            if epochs_store and epochs_i - epochs_store[-1][0] >= stop_epochs:
-                break
 
 
 """
@@ -524,7 +441,4 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
 ## 只训练最后一层的参数
 """
 
-# nohup python c00_toy_gpu_train_6b.py > tc.c00_toy_gpu_train_6b.py.log 2>&1 &
-# tail -n 1000  -f tc.c00_toy_gpu_train_6b.py.log
-# |yongzhuo|
 

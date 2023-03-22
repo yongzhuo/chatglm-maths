@@ -57,7 +57,7 @@ else:
     pretrained_model_name_or_path = "THUDM/chatglm-6b"
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
-model_save_path = "./fine_tuning"
+model_save_path = "./fine_tuning_c00_gpu"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
@@ -71,12 +71,13 @@ epochs = 21
 logger_steps = 100
 max_grad_norm = 5
 float_precision = 2
+max_length = 256
 max_coeff = 100  # 数据在 -max_coeff 到 max_coeff 之间
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
 
-def save_model_state(model, config=None, model_save_dir="./", model_name="tc.model", config_name="tc.config"):
+def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.pt", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -88,7 +89,7 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="tc.mod
     path_model = os.path.join(model_save_path, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(path_dir="", model_name="tc.model", device="cpu", model_save_path="./"):
+def load_model_state(path_dir="", model_name="pytorch_model.pt", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:
@@ -153,7 +154,7 @@ def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
         pabr.update(1)
         for jdx, batch_qtext_i in enumerate(batch_qtext):
             try:
-                response, history = model.chat(tokenizer=tokenizer, query=batch_qtext_i, max_length=2048,
+                response, history = model.chat(tokenizer=tokenizer, query=batch_qtext_i, max_length=max_length,
                                                num_beams=1, do_sample=True, top_p=0.7, temperature=0.95)
                 batch_qans_i = batch_qans[jdx]
                 ans_true.append(batch_qans_i)
@@ -162,8 +163,8 @@ def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
                 rouge_1 += scores[0]["rouge-1"]["f"]
                 rouge_2 += scores[0]["rouge-2"]["f"]
                 rouge_l += scores[0]["rouge-l"]["f"]
-                bleu += sentence_bleu(references=[batch_qans_i.split(" ")],
-                                      hypothesis=response.split(" "),
+                bleu += sentence_bleu(references=[list(batch_qans_i)],
+                                      hypothesis=list(response),
                                       smoothing_function=smooth)
                 if idx == 0 and jdx < 5:
                     print("batch_qtext_{}: {}".format(jdx, batch_qtext_i[:64]))
@@ -285,10 +286,10 @@ class Generator:
                 prompts = [("问:", "答:"), ("问题:", "答案:"), ("计算: ", "回答:"),
                            ("计算题:", "解答:"), ("口算:", "解:"), ("简便运算: ", "剖析:"),
                            ("数学题:", "点拨:"), ("初等数学: ", "解析:")]
-                use_pormpts = True
+                use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = prompt[0] + x + prompt[1]
+                    x = " " + prompt[0] + x + " " + prompt[1]
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)
 
@@ -297,8 +298,8 @@ class Generator:
                 input_yds = y_encode[:-2] + [ID_EOP]
                 if len(input_xds_0) + len(input_xds_1) > MAX_QA_LENGTH:
                     input_xds_0 = [ID_CLS] + x_encode[:-2][:MAX_Q_LENGTH] + [ID_gMASK]
-                    input_xds_1 = [ID_SOP] + y_encode[:-2][:MAX_Q_LENGTH]
-                    input_yds = y_encode[:-2][::MAX_A_LENGTH] + [ID_EOP]
+                    input_xds_1 = [ID_SOP] + y_encode[:-2][:MAX_A_LENGTH]
+                    input_yds = y_encode[:-2][:MAX_A_LENGTH] + [ID_EOP]
                 batch_xds_0.append(input_xds_0)
                 batch_xds_1.append(input_xds_1)
                 batch_yds.append(input_yds)
@@ -334,7 +335,7 @@ print("generator_calculate_line: {}".format(generator_line))
 
 
 # The argument `trust_remote_code` is to be used with Auto classes. It has no effect here and is ignored.
-chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "tc.config"))
+chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
 print("tokenizer.vocab_size: {}".format(tokenizer.vocab_size))
 # ### test
@@ -380,7 +381,7 @@ while True:
             print("clear ok")
             continue
         else:
-            response, history = model.chat(tokenizer=tokenizer, query=ques, history=history, max_length=2048,
+            response, history = model.chat(tokenizer=tokenizer, query=ques, history=history, max_length=max_length,
                                            num_beams=1, do_sample=True, top_p=0.7, temperature=0.95)
             res_ende = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
             print(res_ende)
