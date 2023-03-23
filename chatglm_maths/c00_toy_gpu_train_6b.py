@@ -64,14 +64,14 @@ weight_decay = 5e-4
 lr = 2e-5
 eps = 1e-5  # 半精度需要设置大一点
 betas = (0.9, 0.999)
-grad_accum_steps = 1
+grad_accum_steps = 4
 stop_epochs = 3
 epochs = 21
 logger_steps = 100
-max_grad_norm = 0.5
+max_grad_norm = 1
 float_precision = 2
 max_length = 256
-max_coeff = 100  # 数据在 -max_coeff 到 max_coeff 之间
+max_coeff = 20  # 数据在 -max_coeff 到 max_coeff 之间
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 # attn_weights = torch.masked_fill(attention_scores, attention_mask, torch.finfo(attention_scores.dtype).min)
@@ -103,33 +103,37 @@ def load_model_state(path_dir="", model_name="pytorch_model.pt", device="cpu", m
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
-def sequence_padding(inputs, length=None, value=0, seq_dims=1, mode='post'):
-    """Numpy函数，将序列padding到同一长度
-    code from https://github.com/bojone/bert4keras/blob/master/bert4keras/snippets.py
-    """
-    if length is None:
-        length = np.max([np.shape(x)[:seq_dims] for x in inputs], axis=0)
-    elif not hasattr(length, '__getitem__'):
-        length = [length]
-
-    slices = [np.s_[:length[i]] for i in range(seq_dims)]
-    slices = tuple(slices) if len(slices) > 1 else slices[0]
-    pad_width = [(0, 0) for _ in np.shape(inputs[0])]
-
-    outputs = []
-    for x in inputs:
-        x = x[slices]
-        for i in range(seq_dims):
-            if mode == 'post':
-                pad_width[i] = (0, length[i] - np.shape(x)[i])
-            elif mode == 'pre':
-                pad_width[i] = (length[i] - np.shape(x)[i], 0)
-            else:
-                raise ValueError('"mode" argument must be "post" or "pre".')
-        x = np.pad(x, pad_width, 'constant', constant_values=value)
-        outputs.append(x)
-
-    return np.array(outputs)
+def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+    """  code from model_chatglm.py  """
+    # context_length = seq.index(bos_token_id) + 1
+    context_length = len(seq)
+    position_ids = torch.arange(context_length, dtype=torch.long)
+    if position_encoding_2d:
+        seq_length = seq.index(bos_token_id)
+        if not gmask:
+            mask_position = seq_length - 2
+            position_ids[seq_length:] = mask_position
+        block_position_ids = torch.cat((
+            torch.zeros(seq_length, dtype=torch.long),
+            torch.arange(context_length - seq_length, dtype=torch.long) + 1
+        ))
+        position_ids = torch.stack((position_ids, block_position_ids), dim=0)
+    else:
+        if not gmask:
+            seq_length = seq.index(bos_token_id)
+            mask_position = seq_length - 2
+            position_ids[context_length - 1:] = mask_position
+    # position_ids = position_ids.unsqueeze(0)
+    return position_ids
+def get_masks(seq, bos_token_id):
+    """  code from model_chatglm.py  """
+    context_length = seq.index(bos_token_id) + 1
+    attention_mask = torch.ones((1, len(seq), len(seq)))
+    attention_mask.tril_()
+    attention_mask[..., :context_length - 1] = 1
+    # attention_mask.unsqueeze_(1)
+    attention_mask = (attention_mask < 0.5).bool()
+    return attention_mask
 def set_random_seed(seed):
     """ 设置随机种子 """
     torch.manual_seed(seed)
@@ -201,6 +205,7 @@ class Generator:
 
     def generate_line(self, op="+", max_coeff=100, use_gaussian=True, dim1=1, dim2=2):
         """   返回一行 encode + ans 后的数据   """
+        # use_flag = True
         use_flag = random.choice([0, 1])
         x_12 = self.generate_one(max_coeff, use_gaussian, use_flag, dim1, dim2)
         if use_flag:
@@ -231,8 +236,6 @@ class Generator:
         for idx, _ in enumerate(range(len_corpus)):
             batch_xds_0 = []
             batch_xds_1 = []
-            batch_yds = []
-            batch_pos = []
             batch_qtext = []
             batch_qans = []
             for _ in range(batch_size):
@@ -253,92 +256,55 @@ class Generator:
                     source_tokens = [cls_id] + "问题：" + question + "答案：" + \
                                     [mask_id] + source_tokens[:max_src_length]
                 """
-                # # +[ID_SOP] + y_encode[:-2]
-                # # train, x: [cls, _], x, [MASK]/[gMASK], [sop, _], y
-                # #        y: y, [eop]
-                # # predict, x: [cls, _], x, [MASK]/[gMASK], [sop]
-                # source_tokens = [ID_CLS] + x_encode[:-2] + [ID_gMASK]
-                # target_tokens = y_encode[:-2] + [ID_EOP]
-                # max_src_length, max_tgt_length = args.src_seq_length, args.tgt_seq_length
-                # sep = len(source_tokens)
-                # position_ids = list(range(len(source_tokens)))
-                # block_position_ids = [0] * len(source_tokens)
-                # mask_pos = source_tokens.index(ID_gMASK)
-                # loss_mask = [1] * len(target_tokens)
-                # if len(target_tokens) > max_tgt_length:
-                #     target_tokens = target_tokens[:max_tgt_length]
-                # loss_mask = [1] * len(target_tokens)
-                # if len(target_tokens) < max_tgt_length:
-                #     loss_mask += [0] * (max_tgt_length - len(target_tokens))
-                #     target_tokens += [pad_id] * (max_tgt_length - len(target_tokens))
-                # tokens = source_tokens + [ID_SOP] + target_tokens[:-1]
-                # loss_mask = [0] * len(source_tokens) + loss_mask
-                # target_ids = [0] * len(source_tokens) + target_tokens
-                # position_ids += [mask_pos] * len(target_tokens)
-                # if 1:  # no_block_position:
-                #     block_position_ids += [1] * len(target_tokens)
-                # else:
-                #     block_position_ids += list(range(1, len(target_tokens) + 1))
-                # position_ids = [position_ids, block_position_ids]
-
-                # inputs = {"input_ids": torch.tensor(batch_ids).long().to(device),
-                #           "labels": torch.tensor(batch_yds).long().to(device)}
                 prompts = [("问:", "答:"), ("问题:", "答案:"), ("计算: ", "回答:"),
                            ("计算题:", "解答:"), ("口算:", "解:"), ("简便运算: ", "剖析:"),
                            ("数学题:", "点拨:"), ("初等数学: ", "解析:")]
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = " " + prompt[0] + x + " " + prompt[1]
+                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
-                y_encode = tokenizer.encode(y)
-
-                input_xds_0 = [ID_CLS] + x_encode[:-2] + [ID_gMASK]
-                input_xds_1 = [ID_SOP] + y_encode[:-2]
-                input_yds = y_encode[:-2] + [ID_EOP]
-                if len(input_xds_0) + len(input_xds_1) > MAX_QA_LENGTH:
-                    input_xds_0 = [ID_CLS] + x_encode[:-2][:MAX_Q_LENGTH] + [ID_gMASK]
-                    input_xds_1 = [ID_SOP] + y_encode[:-2][:MAX_A_LENGTH]
-                    input_yds = y_encode[:-2][:MAX_A_LENGTH] + [ID_EOP]
-                batch_xds_0.append(input_xds_0)
-                batch_xds_1.append(input_xds_1)
-                batch_yds.append(input_yds)
+                y_encode = tokenizer.encode(y)[:-2]
+                if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
+                    x_encode = x_encode[:MAX_Q_LENGTH]
+                    y_encode = y_encode[:MAX_A_LENGTH]
+                batch_xds_0.append(x_encode)
+                batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
                 batch_qans.append(y)
-            """left-padding
-            RuntimeError: The size of tensor a (40) must match the size of tensor b (27) at non-singleton dimension 0
-            """
-            batch_ids_0 = sequence_padding(batch_xds_0, value=tokenizer.pad_token_id, mode="post")
-            batch_ids_1 = sequence_padding(batch_xds_1, value=tokenizer.pad_token_id, mode="post")
-            batch_yds = sequence_padding(batch_yds, value=-100, mode="post")  # ignore padding(loss-CE)
-            # batch_ids = np.hstack((batch_ids, np.array([[ID_SOP]] * len(batch_ids))))
-            batch_ids = np.hstack((batch_ids_0, batch_ids_1))
-            # batch_yds = np.hstack((batch_yds, np.array([[ID_EOP]] * len(batch_yds))))
-            length_batch_ids = np.max([np.shape(x)[:1] for x in batch_ids], axis=0)[0]
-            length_batch_yds = np.max([np.shape(x)[:1] for x in batch_yds], axis=0)[0]
-            batch_yds = np.hstack((np.array([[-100] * (length_batch_ids - length_batch_yds)] * len(batch_yds)), batch_yds))
-            # batch_pos = []
-            # for bi in batch_ids:
-            #     gMASK_pos = bi.index(ID_gMASK)
-            #     pos_bi = list(range(len(gMASK_pos))) + [gMASK_pos] * (len(bi)-gMASK_pos)
-            #     batch_pos.append(pos_bi)
-            # batch_pos = np.array(batch_pos, dtype=np.int64)
-            # batch_block_pos = np.array([[0]*len(input_xds_0[0]) + list(range(1, len(input_xds_1[0]) + 1))]
-            #                             *len(input_xds_0), dtype=np.int64)
-            # batch_position_ids = [batch_pos, batch_block_pos]
-            # batch_attention_mask = np.array([[len(batch_ids_0[0])]]*len(batch_ids_0), dtype=np.int64) todo # 下三角
+            lens_01 = [len(batch_xds_0[i]) + len(batch_xds_1[i]) for i in range(len(batch_xds_0))]
+            batch_attention_mask = []
+            batch_position_ids = []
+            batch_input_ids = []
+            batch_labels = []
+            lens_01_max = max(lens_01) + 1
+            for jdx in range(len(lens_01)):
+                x = batch_xds_0[jdx]
+                y = batch_xds_1[jdx]
+                len_padding = lens_01_max - len(x) - len(y) - 1
+                labels = [-100] * (len(x) - 1) + [ID_BOS] + y + [ID_EOS] + [-100] * len_padding
+                input_ids = x + y + [ID_EOS] * (len_padding + 1)
+                tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
+                tensor_labels = torch.tensor(labels, dtype=torch.long)
+                position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+                attention_mask = get_masks(input_ids, ID_BOS)
+                batch_attention_mask.append(attention_mask)
+                batch_position_ids.append(position_ids)
+                batch_input_ids.append(tensor_input_ids)
+                batch_labels.append(tensor_labels)
             if idx < 5:
-                print("batch_ids_0: {}".format(batch_ids[0]))
-                print("batch_yds_0: {}".format(batch_yds[0]))
-
-            # inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long().to(device),
-            #           "labels": torch.tensor(batch_yds.astype(np.int64)).long().to(device)}
-            inputs = {"input_ids": torch.tensor(batch_ids.astype(np.int64)).long().cuda(),
-                      # "position_ids": torch.tensor(batch_position_ids).long().to(device),
-                      # "attention_mask": torch.tensor(batch_attention_mask).long().to(device),
-                      "labels": torch.tensor(batch_yds.astype(np.int64)).long().cuda()}
+                print("batch_attention_mask_0: {}".format(batch_attention_mask[0]))
+                print("batch_position_ids_0: {}".format(batch_position_ids[0]))
+                print("batch_input_ids_0: {}".format(batch_input_ids[0]))
+                print("batch_labels_0: {}".format(batch_labels[0]))
+                print("batch_qtext_0: {}".format(batch_qtext[0]))
+                print("batch_qans_0: {}".format(batch_qans[0]))
+            inputs = {"attention_mask": torch.stack(batch_attention_mask).to(device),
+                      "position_ids": torch.stack(batch_position_ids).to(device),
+                      "input_ids": torch.stack(batch_input_ids).to(device),
+                      "labels": torch.stack(batch_labels).to(device),
+                      }
             yield inputs, batch_qtext, batch_qans
-
 
 
 set_random_seed(seed)
@@ -364,14 +330,14 @@ MAX_Q_LENGTH = 1024 - 2
 MAX_A_LENGTH = 1024 - 2
 MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
 ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
-ID_SEP = tokenizer.sp_tokenizer["<pad>"]
+# ID_SEP = tokenizer.sp_tokenizer["<pad>"]
 ID_PAD = tokenizer.sp_tokenizer["<pad>"]
 ID_MASK = tokenizer.sp_tokenizer["[MASK]"]
 ID_gMASK = tokenizer.sp_tokenizer["[gMASK]"]
 ID_sMASK = tokenizer.sp_tokenizer["[sMASK]"]
 ID_SPACE = tokenizer.sp_tokenizer["▁"]
-ID_SOP = tokenizer.sp_tokenizer["<sop>"]
-ID_EOP = tokenizer.sp_tokenizer["<eop>"]
+ID_BOS = tokenizer.sp_tokenizer["<sop>"]
+ID_EOS = tokenizer.sp_tokenizer["<eop>"]
 ID_S1 = tokenizer.sp_tokenizer["<s>"]
 ID_S2 = tokenizer.sp_tokenizer["</s>"]
 

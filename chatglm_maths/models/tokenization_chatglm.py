@@ -380,7 +380,7 @@ if __name__ == '__main__':
     # tokens = ['▁', '<n>', '<n>', '<n>', '四', '、', '列', '式', '计算', '。', '<n>', '1', '.', '\\', 'frac', '▁{', '▁',
     #           '2', '▁}','▁{', '▁', '9', '▁}', '▁+', '▁\\', 'frac', '▁{', '▁', '1', '▁}', '▁{', '▁', '2', '▁},']
 
-    tokens = cgt_sp_tokenizer.tokenize(text)
+    tokens = cgt_sp_tokenizer.tokenize(text, max_length=128, special_tokens=True)
     print(tokens)
     while True:
         history = []
