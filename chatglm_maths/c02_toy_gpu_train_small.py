@@ -184,7 +184,7 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     if position_encoding_2d:
         seq_length = seq.index(bos_token_id)
         if not gmask:
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[seq_length:] = mask_position
         block_position_ids = torch.cat((
             torch.zeros(seq_length, dtype=torch.long),
@@ -194,16 +194,16 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     else:
         if not gmask:
             seq_length = seq.index(bos_token_id)
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[context_length - 1:] = mask_position
     # position_ids = position_ids.unsqueeze(0)
     return position_ids
 def get_masks(seq, bos_token_id):
     """  code from model_chatglm.py  """
-    context_length = seq.index(bos_token_id) + 1
+    context_length = seq.index(bos_token_id)
     attention_mask = torch.ones((1, len(seq), len(seq)))
     attention_mask.tril_()
-    attention_mask[..., :context_length - 1] = 1
+    attention_mask[..., :context_length] = 1
     # attention_mask.unsqueeze_(1)
     attention_mask = (attention_mask < 0.5).bool()
     return attention_mask
@@ -219,7 +219,6 @@ class Generator:
     Base class for encoders, encodes and decodes matrices
     abstract methods for encoding/decoding numbers
     """
-
     def __init__(self, batch_size=16, float_precision=3):
         self.float_precision = float_precision
 
@@ -295,7 +294,7 @@ class Generator:
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
+                    x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
                 if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
@@ -372,7 +371,10 @@ ID_S2 = tokenizer.sp_tokenizer["</s>"]
 
 ## 字典embedding也很大, 2w图像token, 8w英文token, 5w中文字词token(尝试剔除图片+英文(只保留计算+单词)---待实验?)
 model = ChatGLMForConditionalGeneration(chatglm_config)
-
+# model.enable_input_require_grads()
+# model.gradient_checkpointing_enable()
+# model.is_parallelizable = False
+# model.model_parallel = False
 if os.path.exists(model_save_path) and use_resume:
     print("model load_model_state start!")
     load_model_state(model_save_path=model_save_path)
@@ -460,6 +462,16 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
 
 """
 数学算式(加减乘除)微调, max_coeff=10以内
+5epoch/bert_init/no_gMASK/lr5e-5：
+ID_CLS + _ + text_1:  best_score_avg: 1.01516
+_ + text_1: best_score_avg: 2.65479
+_ + text_1 + [EOS]: best_score_avg: 0(第二轮就报错了)
+
+5epoch/bert_init/use_gMASK/lr5e-5：error
+ID_CLS + _ + text_1: best_score_avg: 0.55081
+_ + text_1: best_score_avg: 0.55081
+_ + text_1 + [EOS]: best_score_avg: 0(第二轮就response就返回为空, 报错)
+
 
 AdamW
 SGD

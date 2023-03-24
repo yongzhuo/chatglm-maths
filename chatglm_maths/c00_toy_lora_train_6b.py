@@ -57,7 +57,7 @@ else:
     num_layers = 28
     warmup_steps = 100
     pretrained_model_name_or_path = "THUDM/chatglm-6b"
-    evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
+    evaluate_steps = 256  # 1024  # int(len_corpus / 5) + 1  # 3820
 
 
 model_save_path = "./fine_tuning_lora"
@@ -65,7 +65,7 @@ model_save_path = "./fine_tuning_lora"
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
 weight_decay = 5e-4
-lr = 2e-5
+lr = 2e-5  # 3e-4
 eps = 1e-5  # 半精度需要设置大一点
 betas = (0.9, 0.999)
 grad_accum_steps = 4
@@ -117,7 +117,7 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     if position_encoding_2d:
         seq_length = seq.index(bos_token_id)
         if not gmask:
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[seq_length:] = mask_position
         block_position_ids = torch.cat((
             torch.zeros(seq_length, dtype=torch.long),
@@ -127,16 +127,16 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     else:
         if not gmask:
             seq_length = seq.index(bos_token_id)
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[context_length - 1:] = mask_position
     # position_ids = position_ids.unsqueeze(0)
     return position_ids
 def get_masks(seq, bos_token_id):
     """  code from model_chatglm.py  """
-    context_length = seq.index(bos_token_id) + 1
+    context_length = seq.index(bos_token_id)
     attention_mask = torch.ones((1, len(seq), len(seq)))
     attention_mask.tril_()
-    attention_mask[..., :context_length - 1] = 1
+    attention_mask[..., :context_length] = 1
     # attention_mask.unsqueeze_(1)
     attention_mask = (attention_mask < 0.5).bool()
     return attention_mask
@@ -267,7 +267,7 @@ class Generator:
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
+                    x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
                 if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
@@ -408,9 +408,8 @@ global_steps = 0
 best_mertics = 0
 best_report = ""
 old_state_dict = model.state_dict
-model.state_dict = (
-    lambda self, *_, **__: get_peft_model_state_dict(self, old_state_dict())
-).__get__(model, type(model))
+model.state_dict = (lambda self, *_, **__: get_peft_model_state_dict(self,
+                   old_state_dict())).__get__(model, type(model))
 
 
 # import torch.nn.functional as F
@@ -463,7 +462,8 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             if score_avg > best_mertics:  # 只保留最优的指标
                 epochs_store.append((epochs_i, idx))
                 best_mertics = score_avg
-                save_model_state(model, chatglm_config, model_save_path)
+                model.save_pretrained(model_save_path)
+                # save_model_state(model, chatglm_config, model_save_path)
             if epochs_store and epochs_i - epochs_store[-1][0] >= stop_epochs:
                 break
 

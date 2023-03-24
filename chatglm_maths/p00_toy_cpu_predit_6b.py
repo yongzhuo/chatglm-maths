@@ -111,7 +111,7 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     if position_encoding_2d:
         seq_length = seq.index(bos_token_id)
         if not gmask:
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[seq_length:] = mask_position
         block_position_ids = torch.cat((
             torch.zeros(seq_length, dtype=torch.long),
@@ -121,16 +121,16 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     else:
         if not gmask:
             seq_length = seq.index(bos_token_id)
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[context_length - 1:] = mask_position
     # position_ids = position_ids.unsqueeze(0)
     return position_ids
 def get_masks(seq, bos_token_id):
     """  code from model_chatglm.py  """
-    context_length = seq.index(bos_token_id) + 1
+    context_length = seq.index(bos_token_id)
     attention_mask = torch.ones((1, len(seq), len(seq)))
     attention_mask.tril_()
-    attention_mask[..., :context_length - 1] = 1
+    attention_mask[..., :context_length] = 1
     # attention_mask.unsqueeze_(1)
     attention_mask = (attention_mask < 0.5).bool()
     return attention_mask
@@ -304,8 +304,6 @@ class Generator:
                       "labels": torch.stack(batch_labels).to(device),
                      }
             yield inputs, batch_qtext, batch_qans
-
-
 
 
 set_random_seed(seed)

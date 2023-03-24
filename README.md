@@ -1,5 +1,5 @@
 # chatglm-maths
-chatglm-6b微调/LORA/推理, 样本为自动生成的整数/小数加减乘除运算, 可gpu/cpu
+chatglm-6b微调/LORA/PPO/推理, 样本为自动生成的整数/小数加减乘除运算, 可gpu/cpu
 
 
 ## 数据集-中文
@@ -37,6 +37,8 @@ numpy
 tqdm
 
 lion_pytorch
+macropodus
+trl>=0.4.1
 ```
 
 ## 微调-计算题
@@ -44,6 +46,9 @@ lion_pytorch
 lora
 微调: python c00_toy_lora_train_6b.py
 推理: python p00_toy_lora_predict_6b.py
+
+ppo
+训练: python t10_toy_trl_train_ppo.py
 
 6b
 微调: python c00_toy_cpu_train_6b.py
@@ -63,7 +68,8 @@ small-layer
  - [https://github.com/huggingface/peft](https://github.com/huggingface/peft)
  - [https://github.com/mymusise/ChatGLM-Tuning](https://github.com/mymusise/ChatGLM-Tuning)
  - [https://github.com/bojone/bert4keras](https://github.com/bojone/bert4keras)
-
+ - [trl](https://github.com/lvwerra/trl)
+ - [math23k](https://aclanthology.org/D17-1088)
 
 ## 推理日志toy
 ```cpu

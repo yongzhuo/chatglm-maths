@@ -1,9 +1,10 @@
 """ PyTorch ChatGLM model. """
 
+import warnings
 import math
 import copy
+import sys
 import os
-import warnings
 import re
 
 import torch
@@ -31,11 +32,16 @@ from transformers.generation.utils import LogitsProcessorList, StoppingCriteriaL
 
 from .configuration_chatglm import ChatGLMConfig
 
-# flags required to enable jit fusion kernels
-torch._C._jit_set_profiling_mode(False)
-torch._C._jit_set_profiling_executor(False)
-torch._C._jit_override_can_fuse_on_cpu(True)
-torch._C._jit_override_can_fuse_on_gpu(True)
+# # flags required to enable jit fusion kernels
+# torch._C._jit_set_profiling_mode(False)
+# torch._C._jit_set_profiling_executor(False)
+# torch._C._jit_override_can_fuse_on_cpu(True)
+# torch._C._jit_override_can_fuse_on_gpu(True)
+if sys.platform != 'darwin':
+    torch._C._jit_set_profiling_mode(False)
+    torch._C._jit_set_profiling_executor(False)
+    torch._C._jit_override_can_fuse_on_cpu(True)
+    torch._C._jit_override_can_fuse_on_gpu(True)
 
 logger = logging.get_logger(__name__)
 
@@ -266,7 +272,8 @@ def attention_fn(
         if not (attention_mask == 0).all():
             # if auto-regressive, skip
             attention_scores.masked_fill_(attention_mask, -10000.0)
-        dtype = attention_scores.type()
+        # dtype = attention_scores.type()
+        dtype = attention_scores.dtype
         attention_scores = attention_scores.float()
         attention_scores = attention_scores * query_key_layer_scaling_coeff
 
@@ -613,7 +620,7 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
 
     is_parallelizable = True
     model_parallel = True
-    supports_gradient_checkpointing = False
+    supports_gradient_checkpointing = True
     config_class = ChatGLMConfig
     base_model_prefix = "transformer"
     _no_split_modules = ["GLM6BBlock"]
@@ -621,12 +628,74 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
 
-    def _init_weights(self, module):
+    def _init_weights(self, module: nn.Module):
+        """Initialize the weights."""
+        return
+
+    def _init_weights_BERT(self, module):
         """ Initialize the weights """
         if isinstance(module, (nn.Linear, nn.Embedding)):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+        return
+
+    def _init_weights_T5(self, module):
+        init_method_std = self.init_method_std
+        if isinstance(module, nn.Linear):
+            if module.name == "dense_h_to_4h":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.hidden_size ** -0.5))
+            elif module.name == "dense_4h_to_h":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.inner_hidden_size ** -0.5))
+            else:
+                raise NotImplementedError(module.name)
+        elif isinstance(module, SelfAttention):
+            if module.name == "query_key_value":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.hidden_size ** -0.5))
+                torch.nn.init.normal_(module.weight[:module.inner_hidden_size], mean=0, std=init_method_std * (
+                        (module.hidden_size * module.hidden_size_per_attention_head) ** -0.5))
+            elif module.name == "dense":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.inner_hidden_size ** -0.5))
+            else:
+                raise NotImplementedError(module.name)
+        elif isinstance(module, CrossAttention):
+            if module.name == "query":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (
+                        (module.hidden_size * module.hidden_size_per_attention_head) ** -0.5))
+            elif module.name == "key_value":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.hidden_size ** -0.5))
+            elif module.name == "dense":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.inner_hidden_size ** -0.5))
+            else:
+                raise NotImplementedError(module.name)
+        else:
+            raise NotImplementedError(module)
+
+    def _init_weights_DeepNorm(self, module):
+        """ Initialize the weights """
+        if isinstance(module, nn.Embedding):
+            # Slightly different from the TF version which uses truncated_normal for initialization
+            # cf https://github.com/pytorch/pytorch/pull/5617
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        elif isinstance(module, GLU):
+            init_method_std = 1
+            if module.name == "dense_h_to_4h":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.hidden_size ** -0.5))
+            elif module.name == "dense_4h_to_h":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.inner_hidden_size ** -0.5))
+        elif isinstance(module, SelfAttention):
+            init_method_std = 1
+            if module.name == "query_key_value":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.hidden_size ** -0.5))
+                torch.nn.init.normal_(module.weight[:module.inner_hidden_size], mean=0, std=init_method_std * (
+                        (module.hidden_size * module.hidden_size_per_attention_head) ** -0.5))
+            elif module.name == "dense":
+                torch.nn.init.normal_(module.weight, mean=0, std=init_method_std * (module.inner_hidden_size ** -0.5))
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
@@ -765,14 +834,12 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.word_embeddings = new_embeddings
 
     def get_masks(self, seq, device):
-        context_length = seq.index(self.config.bos_token_id) + 1
-
+        context_length = seq.index(self.config.bos_token_id)
         attention_mask = torch.ones((1, len(seq), len(seq)), device=device)
         attention_mask.tril_()
-        attention_mask[..., :context_length - 1] = 1
+        attention_mask[..., :context_length] = 1
         attention_mask.unsqueeze_(1)
         attention_mask = (attention_mask < 0.5).bool()
-
         return attention_mask
 
     def get_position_ids(self, seq, mask_position, device, gmask=False):
@@ -854,6 +921,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                     device=input_ids.device,
                     gmask=use_gmask
                 )
+
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)

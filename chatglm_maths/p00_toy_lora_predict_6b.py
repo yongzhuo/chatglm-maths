@@ -26,7 +26,7 @@ CUDA_VISIBLE_DEVICES = "-1"
 # os.environ["NUMEXPR_NUM_THREADS"] = cpu_nums  # export NUMEXPR_NUM_THREADS=1
 os.environ["USE_TORCH"] = "1"
 
-from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_int8_training
+from peft import PeftModel, get_peft_model, LoraConfig, TaskType, prepare_model_for_int8_training
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm, trange
@@ -60,7 +60,7 @@ else:
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
 
-model_save_path = "./fine_tuning_lora"
+model_save_path = "fine_tuning_lora"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
@@ -115,7 +115,7 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     if position_encoding_2d:
         seq_length = seq.index(bos_token_id)
         if not gmask:
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[seq_length:] = mask_position
         block_position_ids = torch.cat((
             torch.zeros(seq_length, dtype=torch.long),
@@ -125,16 +125,16 @@ def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
     else:
         if not gmask:
             seq_length = seq.index(bos_token_id)
-            mask_position = seq_length - 2
+            mask_position = seq_length - 1
             position_ids[context_length - 1:] = mask_position
     # position_ids = position_ids.unsqueeze(0)
     return position_ids
 def get_masks(seq, bos_token_id):
     """  code from model_chatglm.py  """
-    context_length = seq.index(bos_token_id) + 1
+    context_length = seq.index(bos_token_id)
     attention_mask = torch.ones((1, len(seq), len(seq)))
     attention_mask.tril_()
-    attention_mask[..., :context_length - 1] = 1
+    attention_mask[..., :context_length] = 1
     # attention_mask.unsqueeze_(1)
     attention_mask = (attention_mask < 0.5).bool()
     return attention_mask
@@ -344,7 +344,8 @@ ID_S2 = tokenizer.sp_tokenizer["</s>"]
 
 
 ## 字典embedding也很大, 2w图像token, 8w英文token, 5w中文字词token(尝试剔除图片+英文(只保留计算+单词)---待实验?)
-model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
+model = ChatGLMForConditionalGeneration(chatglm_config)
+# model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
 # model = model.half().cuda()  # .to(device)
 # print("model cuda ok!")
 # model = prepare_model_for_int8_training(model, use_gradient_checkpointing=False,
@@ -359,18 +360,21 @@ class CastOutputToFloat(nn.Sequential):
 # model.is_parallelizable = False
 # model.model_parallel = False
 model.lm_head = CastOutputToFloat(model.lm_head)
-peft_config = LoraConfig(target_modules=["query_key_value"],
-                         task_type=TaskType.CAUSAL_LM,
-                         inference_mode=False,
-                         lora_dropout=0.1,
-                         lora_alpha=32,
-                         # enable_lora=None,  # Used with `lora.MergedLinear`.
-                         # bias="none",  # "Bias type for Lora. Can be 'none', 'all' or 'lora_only'
-                         r=8,
-)
-model = get_peft_model(model, peft_config)
+# peft_config = LoraConfig(target_modules=["query_key_value"],
+#                          task_type=TaskType.CAUSAL_LM,
+#                          inference_mode=False,
+#                          lora_dropout=0.1,
+#                          lora_alpha=32,
+#                          # enable_lora=None,  # Used with `lora.MergedLinear`.
+#                          # bias="none",  # "Bias type for Lora. Can be 'none', 'all' or 'lora_only'
+#                          r=8,
+# )
+# model = get_peft_model(model, peft_config)
+model.from_pretrained(pretrained_model_name_or_path)
+model = PeftModel.from_pretrained(model, model_save_path, torch_dtype=torch.float16)
+
 # model.device = device
-load_model_state(model_save_path=model_save_path)
+# load_model_state(model_save_path=model_save_path)
 if use_cuda:
     model = model.half().to(device)
     print("model cuda ok!")
