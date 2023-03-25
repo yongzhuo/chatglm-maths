@@ -106,19 +106,8 @@ def get_masks(seq, bos_token_id):
 
 # get models
 pretrained_model_name_or_path = "THUDM/chatglm-6b"
-model_save_path = "./fine_tuning_c02"   # python c02_toy_gpu_train_small.py跑的模型
-def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
-    """  仅保存模型参数(推荐使用)  """
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    # save config
-    if config:
-        path_config = os.path.join(model_save_dir, config_name)
-        config.to_json_file(path_config)
-    # save model
-    path_model = os.path.join(model_save_dir, model_name)
-    torch.save(model.state_dict(), path_model)
-    logger.info("******model_save_path is {}******".format(path_model))
+model_save_path = "fine_tuning_c02"   # python c02_toy_gpu_train_small.py跑的模型
+model_save_path_ppo = os.path.join(model_save_path, "ppo")
 def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
@@ -135,64 +124,14 @@ def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device=
         raise Exception("******load model error******")
 chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
-# model = ChatGLMForCausalLMWithValueHead.from_pretrained(pretrained_model_name_or_path)
 model_chatglm = ChatGLMForConditionalGeneration(chatglm_config)
-load_model_state(model=model_chatglm, model_save_path=model_save_path)
-model = ChatGLMForCausalLMWithValueHead(pretrained_model=model_chatglm)
-# del model_chatglm
-# gc.collect()
+model = ChatGLMForCausalLMWithValueHead.from_pretrained(model_save_path_ppo)
 model = model.half().cuda()
-model_ref = create_reference_model(model)
-# initialize trainer
-ppo_config = PPOConfig(model_name="ChatGLMForCausalLMWithValueHead",
-                       steps=20000,
-                       mini_batch_size=1,
-                       learning_rate=1.41e-5,
-                       adap_kl_ctrl=True,
-                       init_kl_coef=0.2,
-                       batch_size=1,
-                       max_grad_norm=1,
-                       seed=2023,
-                       )
-# create a ppo trainer
-ppo_trainer = PPOTrainer(ppo_config, model, model_ref, tokenizer)
 
-# dataset
-path_dataset = "math23k_trainset.sample.json"
-with open(path_dataset, mode="r", encoding="utf-8") as fj:
-    math23k_list = json.load(fj)
-    fj.close()
-
-for math23k_dict in tqdm(math23k_list, desc="tqdm"):
-    original_text = math23k_dict.get("original_text", "")
-    equation = math23k_dict.get("equation", "")
-    ans = math23k_dict.get("ans", "")
-    target_text = equation.replace("x=", "") + "=" + ans
-
-    # encode a query
-    query_tensor = tokenizer.encode(original_text, return_tensors="pt").cuda()
-    # get model response
-    # print(query_tensor)
-
-    response_tensor = respond_to_batch_new(model_ref, query_tensor,
-                        txt_len=len(query_tensor[0])-2, top_k=0, top_p=1.0)
-    # define a reward for response
-    # (this could be any reward such as human feedback or output from another model)
-    response_ids = response_tensor.detach().cpu().numpy().tolist()
-    response_text = tokenizer.decode(response_ids)
-    # print(response_ids)
-
-    score_cal = collect_score(ans, target_text, response_text)
-    reward = [torch.tensor(score_cal)]
-    print(reward)
-    # train model for one step with ppo
-    # [torch.cat((query_tensor[0][:-1], torch.tensor(
-    #     [tokenizer.bos_token_id], dtype=torch.long).cuda()))]
-    # train_stats = ppo_trainer.step([query_tensor[0][:-2]], [response_tensor[0]], reward)
-    train_stats = ppo_trainer.step([query_tensor[0]], [response_tensor[0]], reward)
-
-# model.save_pretrained(model_save_path + "/ppo")
-save_model_state(model.pretrained_model, config=chatglm_config,
-                 model_save_dir=model_save_path + "/ppo")
-
-
+original_text = "1+1="
+response, history = model.pretrained_model.chat(tokenizer=tokenizer, query=original_text, history=[], max_length=256,
+                               num_beams=1, do_sample=True, top_p=0.7, temperature=0.95,
+                               )
+res_end = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
+print(res_end)
+print("###############")

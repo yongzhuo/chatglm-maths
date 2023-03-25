@@ -77,7 +77,7 @@ device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
 
-def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.pt", config_name="config.json"):
+def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -86,10 +86,10 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
         path_config = os.path.join(model_save_dir, config_name)
         config.to_json_file(path_config)
     # save model
-    path_model = os.path.join(model_save_path, model_name)
+    path_model = os.path.join(model_save_dir, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(path_dir="", model_name="pytorch_model.pt", device="cpu", model_save_path="./"):
+def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:

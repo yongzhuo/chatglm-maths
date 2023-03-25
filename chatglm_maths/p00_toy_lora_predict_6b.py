@@ -81,7 +81,7 @@ device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
 # attn_weights = torch.masked_fill(attention_scores, attention_mask, torch.finfo(attention_scores.dtype).min)
 
 
-def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.pt", config_name="config.json"):
+def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -90,10 +90,10 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
         path_config = os.path.join(model_save_dir, config_name)
         config.to_json_file(path_config)
     # save model
-    path_model = os.path.join(model_save_path, model_name)
+    path_model = os.path.join(model_save_dir, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(path_dir="", model_name="pytorch_model.pt", device="cpu", model_save_path="./"):
+def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:
@@ -265,7 +265,7 @@ class Generator:
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
+                    x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
                 if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
@@ -355,6 +355,9 @@ model = ChatGLMForConditionalGeneration(chatglm_config)
 # model.gradient_checkpointing_enable()
 # model.enable_input_require_grads()
 # model.config.use_cache = False
+model.is_parallelizable = False
+model.model_parallel = False
+model.supports_gradient_checkpointing = False
 class CastOutputToFloat(nn.Sequential):
     def forward(self, x): return super().forward(x).to(torch.float32)
 # model.is_parallelizable = False
@@ -372,7 +375,6 @@ model.lm_head = CastOutputToFloat(model.lm_head)
 # model = get_peft_model(model, peft_config)
 model.from_pretrained(pretrained_model_name_or_path)
 model = PeftModel.from_pretrained(model, model_save_path, torch_dtype=torch.float16)
-
 # model.device = device
 # load_model_state(model_save_path=model_save_path)
 if use_cuda:
@@ -380,7 +382,6 @@ if use_cuda:
     print("model cuda ok!")
 else:
     model = model.bfloat16()
-model.eval()
 # score_avg, score_dict = evaluate(model, tokenizer, len_corpus=batch_size,
 #                                  device=device)  # 验证数据个数
 

@@ -79,7 +79,7 @@ max_coeff = 100  # 数据在 -max_coeff 到 max_coeff 之间
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
-def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.pt", config_name="config.json"):
+def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -90,10 +90,10 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
             json.dump(vars(config), fc, indent=4, ensure_ascii=False)
             fc.close()
     # save model
-    path_model = os.path.join(model_save_path, model_name)
+    path_model = os.path.join(model_save_dir, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(model_save_path="./", model_name="pytorch_model.pt", device="cpu"):
+def load_model_state(model_save_path="./", model_name="pytorch_model.bin", device="cpu"):
     """  仅加载模型参数(推荐使用)  """
     try:
         path_model = os.path.join(model_save_path, model_name)

@@ -628,11 +628,11 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
 
-    def _init_weights(self, module: nn.Module):
+    def _init_weights_org(self, module: nn.Module):
         """Initialize the weights."""
         return
 
-    def _init_weights_BERT(self, module):
+    def _init_weights(self, module):
         """ Initialize the weights """
         if isinstance(module, (nn.Linear, nn.Embedding)):
             # Slightly different from the TF version which uses truncated_normal for initialization

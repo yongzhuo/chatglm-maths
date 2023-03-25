@@ -66,7 +66,7 @@ model_save_path = "./fine_tuning_c01"
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
 weight_decay = 5e-4
-lr = 5e-5
+lr = 2e-5
 eps = 1e-5
 betas = (0.9, 0.999)
 grad_accum_steps = 4
@@ -80,7 +80,7 @@ device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
 
-def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.pt", config_name="config.json"):
+def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -89,10 +89,10 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
         path_config = os.path.join(model_save_dir, config_name)
         config.to_json_file(path_config)
     # save model
-    path_model = os.path.join(model_save_path, model_name)
+    path_model = os.path.join(model_save_dir, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(path_dir="", model_name="pytorch_model.pt", device="cpu", model_save_path="./"):
+def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:

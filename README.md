@@ -14,7 +14,7 @@ chatglm-6b微调/LORA/PPO/推理, 样本为自动生成的整数/小数加减乘除运算, 可gpu/cpu
 2. 模型输入输出, 默认的tokenization_chatglm.py/modeling_chatglm.py不能用, 因为那是完全为生成generate设置的, 需要自己写好所有缩入参数, 或者机子改成适配的;
    2.1 ChatGLMModel中, get_masks()正常, get_position_ids()函数中‘context_length = seq.index(150004) + 1’ 改为 ‘context_length = len(seq)’;
    2.2 训练输入input_ids格式暂定为(训练后post-padding, 推理前pre-padding[tokenization_chatglm.py默认pre-padding])
-       x: [CLS] + prompt_1 + "\n" + text_1 + "\n" + prompt_2 + [gMASK] + [BOS] + "\n" + text_2 + [PAD]*N
+       x: prompt_1 + "\n" + "_" + text_1 + "\n" + prompt_2 + [gMASK] + [BOS] + "_" + text_2 + [PAD]*N
    2.3 训练输入label_ids格式暂定为(CrossEntropyLoss默认忽略-100不参与计算loss)  
        y = [-100]*len(text_1+1) + [BOS] + text_2 + [EOS] + [-100]*N
    2.4 注意position/mask(自带的只是推理用的batch_size=1, 所以训练输入还得自己写), 可参考GLM-130的README.md, huozhe 查看GLM-1源码https://github.com/THUDM/GLM/blob/main/tasks/seq2seq/dataset.py
@@ -49,6 +49,7 @@ lora
 
 ppo
 训练: python t10_toy_trl_train_ppo.py
+测试: python t10_toy_trl_predict_ppo.py
 
 6b
 微调: python c00_toy_cpu_train_6b.py
