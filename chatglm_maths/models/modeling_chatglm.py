@@ -922,7 +922,9 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                     gmask=use_gmask
                 )
 
-
+        # print(input_ids[0].detach().cpu().numpy())
+        # print(attention_mask[0].detach().cpu().numpy())
+        # print(position_ids[0].detach().cpu().numpy())
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
 
@@ -1199,10 +1201,15 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
             prompt += "[Round {}]\n问：{}\n答：".format(len(history), query)
         input_ids = tokenizer([prompt], return_tensors="pt", padding=True)
         input_ids = input_ids.to(self.device)
+        # print(input_ids)
         outputs = self.generate(**input_ids, **gen_kwargs)
+        # print(outputs)
         outputs = outputs.tolist()[0][len(input_ids["input_ids"][0]):]
+        # print(outputs)
         response = tokenizer.decode(outputs)
+        # print(response)
         response = self.process_response(response)
+        # print(response)
         history = history + [(query, response)]
         return response, history
 

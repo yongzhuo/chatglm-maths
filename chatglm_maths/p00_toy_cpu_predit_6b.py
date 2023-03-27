@@ -17,12 +17,12 @@ path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 print(path_root)
 sys.path.append(path_root)
 
-# cpu_nums = "9"
-# os.environ["OMP_NUM_THREADS"] = cpu_nums  # export OMP_NUM_THREADS=1
-# os.environ["OPENBLAS_NUM_THREADS"] = cpu_nums  # export OPENBLAS_NUM_THREADS=1
-# os.environ["MKL_NUM_THREADS"] = cpu_nums  # export MKL_NUM_THREADS=1
-# os.environ["VECLIB_MAXIMUM_THREADS"] = cpu_nums  # export VECLIB_MAXIMUM_THREADS=1
-# os.environ["NUMEXPR_NUM_THREADS"] = cpu_nums  # export NUMEXPR_NUM_THREADS=1
+cpu_nums = "9"
+os.environ["OMP_NUM_THREADS"] = cpu_nums  # export OMP_NUM_THREADS=1
+os.environ["OPENBLAS_NUM_THREADS"] = cpu_nums  # export OPENBLAS_NUM_THREADS=1
+os.environ["MKL_NUM_THREADS"] = cpu_nums  # export MKL_NUM_THREADS=1
+os.environ["VECLIB_MAXIMUM_THREADS"] = cpu_nums  # export VECLIB_MAXIMUM_THREADS=1
+os.environ["NUMEXPR_NUM_THREADS"] = cpu_nums  # export NUMEXPR_NUM_THREADS=1
 os.environ["USE_TORCH"] = "1"
 
 from tqdm import tqdm
@@ -57,7 +57,8 @@ else:
     pretrained_model_name_or_path = "THUDM/chatglm-6b"
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
-model_save_path = "./fine_tuning_c00_gpu"
+model_save_path = "fine_tuning_c00_cpu"
+# model_save_path = "fine_tuning_c00_gpu"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
@@ -71,8 +72,11 @@ epochs = 21
 logger_steps = 100
 max_grad_norm = 5
 float_precision = 2
-max_length = 256
 max_coeff = 100  # 数据在 -max_coeff 到 max_coeff 之间
+MAX_LENGTH_Q = 64 - 2
+MAX_LENGTH_A = 32 - 2
+MAX_LENGTH_QA = MAX_LENGTH_Q + MAX_LENGTH_A + 2
+max_length = MAX_LENGTH_QA
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
@@ -103,7 +107,7 @@ def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", 
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -261,37 +265,41 @@ class Generator:
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
+                    x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
-                if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
-                    x_encode = x_encode[:MAX_Q_LENGTH]
-                    y_encode = y_encode[:MAX_A_LENGTH]
+                if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
+                    x = x[:MAX_LENGTH_Q]
+                    y = y[:MAX_LENGTH_A]
+                    if ID_gMASK not in x:
+                        x += [ID_gMASK]
+                    if ID_BOS not in x:
+                        x += [ID_BOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
                 batch_qans.append(y)
-            lens_01 = [len(batch_xds_0[i])+len(batch_xds_1[i]) for i in range(len(batch_xds_0))]
+            lens_01 = [len(batch_xds_0[i]) + len(batch_xds_1[i]) for i in range(len(batch_xds_0))]
             batch_attention_mask = []
             batch_position_ids = []
             batch_input_ids = []
             batch_labels = []
-            lens_01_max = max(lens_01) + 1
+            lens_01_max = min(MAX_LENGTH_QA, max(lens_01) + 1)
             for jdx in range(len(lens_01)):
                 x = batch_xds_0[jdx]
                 y = batch_xds_1[jdx]
                 len_padding = lens_01_max - len(x) - len(y) - 1
-                labels = [-100] * (len(x)-1) + [ID_BOS] + y + [ID_EOS] + [-100] * len_padding
-                input_ids = x + y + [ID_EOS] * (len_padding+1)
+                labels = [-100] * len(x) + y + [ID_EOS] + [-100] * len_padding
+                input_ids = x + y + [ID_EOS] * (len_padding + 1)
                 tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
                 tensor_labels = torch.tensor(labels, dtype=torch.long)
-                position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+                position_ids = get_position_ids(input_ids, ID_BOS, gmask=True, position_encoding_2d=True)
                 attention_mask = get_masks(input_ids, ID_BOS)
                 batch_attention_mask.append(attention_mask)
                 batch_position_ids.append(position_ids)
                 batch_input_ids.append(tensor_input_ids)
                 batch_labels.append(tensor_labels)
-            if idx < 5:
+            if idx < 2:
                 print("batch_attention_mask_0: {}".format(batch_attention_mask[0]))
                 print("batch_position_ids_0: {}".format(batch_position_ids[0]))
                 print("batch_input_ids_0: {}".format(batch_input_ids[0]))
@@ -302,7 +310,7 @@ class Generator:
                       "position_ids": torch.stack(batch_position_ids).to(device),
                       "input_ids": torch.stack(batch_input_ids).to(device),
                       "labels": torch.stack(batch_labels).to(device),
-                     }
+                      }
             yield inputs, batch_qtext, batch_qans
 
 
@@ -320,9 +328,6 @@ print("tokenizer.vocab_size: {}".format(tokenizer.vocab_size))
 # ### test
 # chatglm_config.num_layers = num_layers
 # chatglm_config.torch_dtype = "float16"
-MAX_Q_LENGTH = 1024 - 2
-MAX_A_LENGTH = 1024 - 2
-MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
 ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
 # ID_SEP = tokenizer.sp_tokenizer["<pad>"]
 ID_PAD = tokenizer.sp_tokenizer["<pad>"]

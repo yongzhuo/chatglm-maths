@@ -45,6 +45,20 @@ class ChatGLMForCausalLMWithValueHead(AutoModelForCausalLMWithValueHead):
     def __init__(self, pretrained_model, **kwargs):
         super().__init__(pretrained_model, **kwargs)
         self.is_peft_model = False
+def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_dir="./"):
+    """  仅加载模型参数(推荐使用)  """
+    try:
+        if path_dir:
+            path_model = path_dir
+        else:
+            path_model = os.path.join(model_save_dir, model_name)
+        model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
+        model.to(device)
+        logger.info("******model loaded success******")
+        logger.info("self.device: {}".format(device))
+    except Exception as e:
+        logger.info(str(e))
+        raise Exception("******load model error******")
 def respond_to_batch_new(model, queries, txt_len=20, top_k=0, top_p=1.0):
     """Sample text from language model."""
     input_ids = queries
@@ -53,7 +67,7 @@ def respond_to_batch_new(model, queries, txt_len=20, top_k=0, top_p=1.0):
     for i in range(txt_len):
         # Get Logits
         outputs = model(torch.cat([start_ids, end_ids], dim=-1))
-        next_token_logits = outputs[0][:, -1, :]
+        next_token_logits = outputs[-1][:, -1, :]  # new-value
         next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
         # Sample
         probs = F.softmax(next_token_logits, dim=-1)
@@ -72,7 +86,7 @@ def collect_score(ans, target, predict):
             score_2 = 0.0
         scores = [score_1, score_2]
         return sum(scores) / len(scores)
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -106,32 +120,29 @@ def get_masks(seq, bos_token_id):
 
 # get models
 pretrained_model_name_or_path = "THUDM/chatglm-6b"
-model_save_path = "fine_tuning_c02"   # python c02_toy_gpu_train_small.py跑的模型
+model_save_path = "fine_tuning_t10"   # python c02_toy_gpu_train_small.py跑的模型
 model_save_path_ppo = os.path.join(model_save_path, "ppo")
-def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
-    """  仅加载模型参数(推荐使用)  """
-    try:
-        if path_dir:
-            path_model = path_dir
-        else:
-            path_model = os.path.join(model_save_path, model_name)
-        model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
-        model.to(device)
-        logger.info("******model loaded success******")
-        logger.info("self.device: {}".format(device))
-    except Exception as e:
-        logger.info(str(e))
-        raise Exception("******load model error******")
+MAX_LEN=256
 chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
 model_chatglm = ChatGLMForConditionalGeneration(chatglm_config)
-model = ChatGLMForCausalLMWithValueHead.from_pretrained(model_save_path_ppo)
-model = model.half().cuda()
+model = ChatGLMForCausalLMWithValueHead(pretrained_model=model_chatglm)
+# model = ChatGLMForCausalLMWithValueHead.from_pretrained(model_save_path_ppo)
+model = load_model_state(model, model_save_dir=model_save_path)
+model = model.cuda()
 
+# original_text = "1+1="
+# response, history = model.pretrained_model.chat(tokenizer=tokenizer, query=original_text, history=[], max_length=256,
+#                                num_beams=1, do_sample=True, top_p=0.7, temperature=0.95,
+#                                )
+# res_end = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
+# print(res_end)
+# print("###############")
 original_text = "1+1="
-response, history = model.pretrained_model.chat(tokenizer=tokenizer, query=original_text, history=[], max_length=256,
-                               num_beams=1, do_sample=True, top_p=0.7, temperature=0.95,
-                               )
-res_end = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
-print(res_end)
-print("###############")
+query_tensor = tokenizer.encode(original_text, return_tensors="pt").cuda()
+response_tensor = respond_to_batch_new(model, query_tensor,
+                        txt_len=MAX_LEN, top_k=0, top_p=1.0)
+response_ids = response_tensor.detach().cpu().numpy().tolist()
+response_text = tokenizer.decode(response_ids)
+print(response_text)
+

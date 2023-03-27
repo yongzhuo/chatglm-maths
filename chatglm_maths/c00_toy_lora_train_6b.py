@@ -17,7 +17,7 @@ print(path_root)
 sys.path.append(path_root)
 CUDA_VISIBLE_DEVICES = "0"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:6144"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 # cpu_nums = "9"
 # os.environ["OMP_NUM_THREADS"] = cpu_nums  # export OMP_NUM_THREADS=1
 # os.environ["OPENBLAS_NUM_THREADS"] = cpu_nums  # export OPENBLAS_NUM_THREADS=1
@@ -28,7 +28,7 @@ os.environ["USE_TORCH"] = "1"
 
 from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_int8_training, get_peft_model_state_dict
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoConfig
-from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import AdamW, get_linear_schedule_with_warmup, GenerationConfig
 from tqdm import tqdm, trange
 import torch.nn as nn
 import numpy as np
@@ -60,12 +60,12 @@ else:
     evaluate_steps = 256  # 1024  # int(len_corpus / 5) + 1  # 3820
 
 
-model_save_path = "./fine_tuning_lora"
+model_save_path = "./fine_tuning_lora_c00"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
 weight_decay = 5e-4
-lr = 2e-5  # 3e-4
+lr = 5e-5  # 3e-4
 eps = 1e-5  # 半精度需要设置大一点
 betas = (0.9, 0.999)
 grad_accum_steps = 4
@@ -76,6 +76,10 @@ max_grad_norm = 0.5
 float_precision = 2
 max_length = 256
 max_coeff = 20  # 数据在 -max_coeff 到 max_coeff 之间
+MAX_LENGTH_Q = 1024 - 2
+MAX_LENGTH_A = 1024 - 2
+MAX_LENGTH_QA = MAX_LENGTH_Q + MAX_LENGTH_A + 2
+
 # device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
 #             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 # attn_weights = torch.masked_fill(attention_scores, attention_mask, torch.finfo(attention_scores.dtype).min)
@@ -89,11 +93,15 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
         os.makedirs(model_save_dir)
     # save config
     if config:
-        path_config = os.path.join(model_save_dir, config_name)
-        config.to_json_file(path_config)
-    # save model
+        # path_config = os.path.join(model_save_dir, config_name)
+        # config.to_json_file(path_config)
+        config.save_pretrained(model_save_dir)
+    # save model only trained
     path_model = os.path.join(model_save_dir, model_name)
-    torch.save(model.state_dict(), path_model)
+    grad_params_dict = {k: v.to("cpu")
+                        for k, v in model.named_parameters()
+                        if v.requires_grad == True}
+    torch.save(grad_params_dict, path_model)
     logger.info("******model_save_path is {}******".format(path_model))
 def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
@@ -103,13 +111,13 @@ def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", 
         else:
             path_model = os.path.join(model_save_path, model_name)
         model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
-        # model.to(device)
+        model.to(device)
         logger.info("******model loaded success******")
         logger.info("self.device: {}".format(device))
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -148,7 +156,7 @@ def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
     rouge = Rouge()
     smooth = SmoothingFunction().method1
 
-    model.eval()
+    # model.eval()
     pabr = tqdm(total=len_corpus//batch_size, desc="eval")
     ans_true = []
     ans_pred = []
@@ -270,9 +278,13 @@ class Generator:
                     x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
-                if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
-                    x_encode = x_encode[:MAX_Q_LENGTH]
-                    y_encode = y_encode[:MAX_A_LENGTH]
+                if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
+                    x = x[:MAX_LENGTH_Q]
+                    y = y[:MAX_LENGTH_A]
+                    if ID_gMASK not in x:
+                        x += [ID_gMASK]
+                    if ID_BOS not in x:
+                        x += [ID_BOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
@@ -282,32 +294,32 @@ class Generator:
             batch_position_ids = []
             batch_input_ids = []
             batch_labels = []
-            lens_01_max = max(lens_01) + 1
+            lens_01_max = min(MAX_LENGTH_QA, max(lens_01) + 1)
             for jdx in range(len(lens_01)):
                 x = batch_xds_0[jdx]
                 y = batch_xds_1[jdx]
                 len_padding = lens_01_max - len(x) - len(y) - 1
-                labels = [-100] * (len(x) - 1) + [ID_BOS] + y + [ID_EOS] + [-100] * len_padding
+                labels = [-100] * len(x) + y + [ID_EOS] + [-100] * len_padding
                 input_ids = x + y + [ID_EOS] * (len_padding + 1)
                 tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
                 tensor_labels = torch.tensor(labels, dtype=torch.long)
-                position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+                position_ids = get_position_ids(input_ids, ID_BOS, gmask=True, position_encoding_2d=True)
                 attention_mask = get_masks(input_ids, ID_BOS)
                 batch_attention_mask.append(attention_mask)
                 batch_position_ids.append(position_ids)
                 batch_input_ids.append(tensor_input_ids)
                 batch_labels.append(tensor_labels)
-            if idx < 5:
+            if idx < 2:
                 print("batch_attention_mask_0: {}".format(batch_attention_mask[0]))
                 print("batch_position_ids_0: {}".format(batch_position_ids[0]))
                 print("batch_input_ids_0: {}".format(batch_input_ids[0]))
                 print("batch_labels_0: {}".format(batch_labels[0]))
                 print("batch_qtext_0: {}".format(batch_qtext[0]))
                 print("batch_qans_0: {}".format(batch_qans[0]))
-            inputs = {"attention_mask": torch.stack(batch_attention_mask).to(device),
-                      "position_ids": torch.stack(batch_position_ids).to(device),
-                      "input_ids": torch.stack(batch_input_ids).to(device),
-                      "labels": torch.stack(batch_labels).to(device),
+            inputs = {"attention_mask": torch.stack(batch_attention_mask).cuda(),
+                      "position_ids": torch.stack(batch_position_ids).cuda(),
+                      "input_ids": torch.stack(batch_input_ids).cuda(),
+                      "labels": torch.stack(batch_labels).cuda(),
                       }
             yield inputs, batch_qtext, batch_qans
 
@@ -329,9 +341,9 @@ tokens_id = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
 print(text)
 print("tokenizer.encode_plus: {}".format(tokens_id))
 print("tokenizer.vocab_size: {}".format(tokenizer.vocab_size))
-MAX_Q_LENGTH = 1024 - 2
-MAX_A_LENGTH = 1024 - 2
-MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
+# MAX_Q_LENGTH = 1024 - 2
+# MAX_A_LENGTH = 1024 - 2
+# MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
 ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
 # ID_SEP = tokenizer.sp_tokenizer["<pad>"]
 ID_PAD = tokenizer.sp_tokenizer["<pad>"]
@@ -350,9 +362,9 @@ ID_S2 = tokenizer.sp_tokenizer["</s>"]
 model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
 # model = model.half().cuda()  # .to(device)
 # print("model cuda ok!")
-# model = prepare_model_for_int8_training(model, use_gradient_checkpointing=False,
-#             layer_norm_names=["layer_norm"])
-            # layer_norm_names=["input_layernorm", "post_attention_layernorm",])
+# model = prepare_model_for_int8_training(model, use_gradient_checkpointing=True,
+#             # layer_norm_names=["layer_norm"])
+#             layer_norm_names=["input_layernorm", "post_attention_layernorm",])
 print("prepare_model_for_int8_training!")
 # model.gradient_checkpointing_enable()
 # model.enable_input_require_grads()
@@ -362,7 +374,11 @@ class CastOutputToFloat(nn.Sequential):
 # model.is_parallelizable = False
 # model.model_parallel = False
 model.lm_head = CastOutputToFloat(model.lm_head)
-peft_config = LoraConfig(target_modules=["query_key_value"],
+peft_config = LoraConfig(target_modules=["query_key_value",
+                                         # "dense_h_to_4h",
+                                         # "dense_4h_to_h",
+                                         # "dense"
+                                         ],
                          task_type=TaskType.CAUSAL_LM,
                          inference_mode=False,
                          lora_dropout=0.1,
@@ -372,6 +388,7 @@ peft_config = LoraConfig(target_modules=["query_key_value"],
                          r=8,
 )
 model = get_peft_model(model, peft_config)
+# model = model.cuda()
 model = model.half().cuda()
 # model.device = device
 model.print_trainable_parameters()
@@ -407,9 +424,9 @@ epochs_store = []
 global_steps = 0
 best_mertics = 0
 best_report = ""
-old_state_dict = model.state_dict
-model.state_dict = (lambda self, *_, **__: get_peft_model_state_dict(self,
-                   old_state_dict())).__get__(model, type(model))
+# old_state_dict = model.state_dict
+# model.state_dict = (lambda self, *_, **__: get_peft_model_state_dict(self,
+#                    old_state_dict())).__get__(model, type(model))
 
 
 # import torch.nn.functional as F
@@ -417,7 +434,7 @@ model.state_dict = (lambda self, *_, **__: get_peft_model_state_dict(self,
 loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
 for epochs_i in trange(epochs, desc="epoch"):  # epoch
     print("epochs: ".format(epochs_i))
-    model.train()  # train-type
+    # model.train()  # train-type
     pabr = tqdm(total=times_batch_size, desc="epoch_{}_step".format(epochs_i))
     for idx, (inputs, batch_qtext, batch_qans) in enumerate(generator.__iter__(len_corpus, max_coeff, device)):  # step
         pabr.update(1)
@@ -449,8 +466,8 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             scheduler.step()
             optimizer.zero_grad()
 
-        if epochs_i == 0 and idx+1 >= len_corpus:
-            save_model_state(model, chatglm_config, model_save_path)
+        if epochs_i == 0 and idx == 0:
+            save_model_state(model, peft_config, model_save_path)
         # 评估算法/打印日志/存储模型, 1个epoch/到达保存的步数/或者是最后一轮最后一步
         if (evaluate_steps > 0 and global_steps % evaluate_steps == 0) or (epochs_i > 0 and idx == 0) \
                 or (epochs_i + 1 == epochs and (idx + 1) >= len_corpus):
@@ -458,12 +475,12 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             print("epoch_global: {}, step_global: {}, step: {}".format(epochs_i, global_steps, idx))
             print("best_score_avg: {}\n".format(score_avg))
             print("current_mertics: {}".format(score_dict))
-            model.train()
+            # model.train()
             if score_avg > best_mertics:  # 只保留最优的指标
                 epochs_store.append((epochs_i, idx))
                 best_mertics = score_avg
-                model.save_pretrained(model_save_path)
-                # save_model_state(model, chatglm_config, model_save_path)
+                # model.save_pretrained(model_save_path)
+                save_model_state(model, peft_config, model_save_path)
             if epochs_store and epochs_i - epochs_store[-1][0] >= stop_epochs:
                 break
 

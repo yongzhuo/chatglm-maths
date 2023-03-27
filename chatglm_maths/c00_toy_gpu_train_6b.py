@@ -70,8 +70,11 @@ epochs = 21
 logger_steps = 100
 max_grad_norm = 1
 float_precision = 2
-max_length = 256
 max_coeff = 20  # 数据在 -max_coeff 到 max_coeff 之间
+MAX_LENGTH_Q = 64 - 2
+MAX_LENGTH_A = 32 - 2
+MAX_LENGTH_QA = MAX_LENGTH_Q + MAX_LENGTH_A + 2
+max_length = MAX_LENGTH_QA
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
             and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 # attn_weights = torch.masked_fill(attention_scores, attention_mask, torch.finfo(attention_scores.dtype).min)
@@ -103,7 +106,7 @@ def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", 
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -262,12 +265,16 @@ class Generator:
                 use_pormpts = False
                 if use_pormpts:
                     prompt = random.choice(prompts)
-                    x = "\n" + prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
+                    x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
-                if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
-                    x_encode = x_encode[:MAX_Q_LENGTH]
-                    y_encode = y_encode[:MAX_A_LENGTH]
+                if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
+                    x = x[:MAX_LENGTH_Q]
+                    y = y[:MAX_LENGTH_A]
+                    if ID_gMASK not in x:
+                        x += [ID_gMASK]
+                    if ID_BOS not in x:
+                        x += [ID_BOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
@@ -277,32 +284,32 @@ class Generator:
             batch_position_ids = []
             batch_input_ids = []
             batch_labels = []
-            lens_01_max = max(lens_01) + 1
+            lens_01_max = min(MAX_LENGTH_QA, max(lens_01) + 1)
             for jdx in range(len(lens_01)):
                 x = batch_xds_0[jdx]
                 y = batch_xds_1[jdx]
                 len_padding = lens_01_max - len(x) - len(y) - 1
-                labels = [-100] * (len(x) - 1) + [ID_BOS] + y + [ID_EOS] + [-100] * len_padding
+                labels = [-100] * len(x) + y + [ID_EOS] + [-100] * len_padding
                 input_ids = x + y + [ID_EOS] * (len_padding + 1)
                 tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
                 tensor_labels = torch.tensor(labels, dtype=torch.long)
-                position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+                position_ids = get_position_ids(input_ids, ID_BOS, gmask=True, position_encoding_2d=True)
                 attention_mask = get_masks(input_ids, ID_BOS)
                 batch_attention_mask.append(attention_mask)
                 batch_position_ids.append(position_ids)
                 batch_input_ids.append(tensor_input_ids)
                 batch_labels.append(tensor_labels)
-            if idx < 5:
+            if idx < 2:
                 print("batch_attention_mask_0: {}".format(batch_attention_mask[0]))
                 print("batch_position_ids_0: {}".format(batch_position_ids[0]))
                 print("batch_input_ids_0: {}".format(batch_input_ids[0]))
                 print("batch_labels_0: {}".format(batch_labels[0]))
                 print("batch_qtext_0: {}".format(batch_qtext[0]))
                 print("batch_qans_0: {}".format(batch_qans[0]))
-            inputs = {"attention_mask": torch.stack(batch_attention_mask).to(device),
-                      "position_ids": torch.stack(batch_position_ids).to(device),
-                      "input_ids": torch.stack(batch_input_ids).to(device),
-                      "labels": torch.stack(batch_labels).to(device),
+            inputs = {"attention_mask": torch.stack(batch_attention_mask).cuda(),
+                      "position_ids": torch.stack(batch_position_ids).cuda(),
+                      "input_ids": torch.stack(batch_input_ids).cuda(),
+                      "labels": torch.stack(batch_labels).cuda(),
                       }
             yield inputs, batch_qtext, batch_qans
 
@@ -326,9 +333,6 @@ tokens_id = x_encode[:-1] + y_encode[:-2] + [y_encode[-1]]
 print(text)
 print("tokenizer.encode_plus: {}".format(tokens_id))
 print("tokenizer.vocab_size: {}".format(tokenizer.vocab_size))
-MAX_Q_LENGTH = 1024 - 2
-MAX_A_LENGTH = 1024 - 2
-MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
 ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
 # ID_SEP = tokenizer.sp_tokenizer["<pad>"]
 ID_PAD = tokenizer.sp_tokenizer["<pad>"]
@@ -467,7 +471,7 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             scheduler.step()
             optimizer.zero_grad()
 
-        if epochs_i == 0 and idx+1 >= len_corpus:
+        if epochs_i == 0 and idx == 0:
             save_model_state(model, chatglm_config, model_save_path)
         # 评估算法/打印日志/存储模型, 1个epoch/到达保存的步数/或者是最后一轮最后一步
         if (evaluate_steps > 0 and global_steps % evaluate_steps == 0) or (epochs_i > 0 and idx == 0) \

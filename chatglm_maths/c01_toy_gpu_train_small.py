@@ -24,6 +24,9 @@ sys.path.append(path_root)
 # os.environ["VECLIB_MAXIMUM_THREADS"] = cpu_nums  # export VECLIB_MAXIMUM_THREADS=1
 # os.environ["NUMEXPR_NUM_THREADS"] = cpu_nums  # export NUMEXPR_NUM_THREADS=1
 os.environ["USE_TORCH"] = "1"
+CUDA_VISIBLE_DEVICES = "0"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:6144"
+os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm, trange
@@ -36,7 +39,6 @@ from chatglm_maths.models.tokenization_chatglm import ChatGLMTokenizer
 
 is_toy = True
 if is_toy:
-    CUDA_VISIBLE_DEVICES = "0"
     use_cuda = True
     quantize_type = None  # None, 16, 8, 4
     use_half = True
@@ -49,7 +51,6 @@ if is_toy:
     pretrained_model_name_or_path = "THUDM/chatglm-6b"  # None
     evaluate_steps = 3820
 else:
-    CUDA_VISIBLE_DEVICES = "0"
     use_cuda = True
     quantize_type = None  # None, 16, 8, 4
     use_half = True
@@ -63,11 +64,11 @@ else:
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
 
-model_save_path = "./fine_tuning_c02"
+model_save_path = "./fine_tuning_c01_gpu"
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
 weight_decay = 5e-4
-lr = 2e-5
+lr = 5e-5
 eps = 1e-5
 betas = (0.9, 0.999)
 grad_accum_steps = 4
@@ -75,8 +76,11 @@ stop_epochs = 3
 epochs = 21
 max_grad_norm = 1
 float_precision = 2
-max_length = 256
 max_coeff = 20  # 数据在 -max_coeff 到 max_coeff 之间
+MAX_LENGTH_Q = 64 - 2
+MAX_LENGTH_A = 32 - 2
+MAX_LENGTH_QA = MAX_LENGTH_Q + MAX_LENGTH_A + 2
+max_length = MAX_LENGTH_QA
 device = "cuda:{}".format(CUDA_VISIBLE_DEVICES) if (torch.cuda.is_available() \
                                                     and use_cuda and CUDA_VISIBLE_DEVICES != "-1") else "cpu"
 
@@ -101,7 +105,6 @@ def load_model_state(path_dir="", model_name="pytorch_model.bin", device="cpu", 
         else:
             path_model = os.path.join(model_save_path, model_name)
         model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
-        model.to(device)
         logger.info("******model loaded success******")
         logger.info("self.device: {}".format(device))
     except Exception as e:
@@ -176,7 +179,7 @@ def evaluate(model, tokenizer, len_corpus=batch_size, device="cpu"):
     print(score_dict)
     score_avg = round(sum(list(score_dict.values())) / len(score_dict.keys()), 5)
     return score_avg, score_dict
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -297,9 +300,13 @@ class Generator:
                     x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
-                if len(x_encode) + len(x_encode) > MAX_QA_LENGTH:
-                    x_encode = x_encode[:MAX_Q_LENGTH]
-                    y_encode = y_encode[:MAX_A_LENGTH]
+                if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
+                    x = x[:MAX_LENGTH_Q]
+                    y = y[:MAX_LENGTH_A]
+                    if ID_gMASK not in x:
+                        x += [ID_gMASK]
+                    if ID_BOS not in x:
+                        x += [ID_BOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
@@ -309,16 +316,16 @@ class Generator:
             batch_position_ids = []
             batch_input_ids = []
             batch_labels = []
-            lens_01_max = max(lens_01) + 1
+            lens_01_max = min(MAX_LENGTH_QA, max(lens_01) + 1)
             for jdx in range(len(lens_01)):
                 x = batch_xds_0[jdx]
                 y = batch_xds_1[jdx]
                 len_padding = lens_01_max - len(x) - len(y) - 1
-                labels = [-100] * (len(x)-1) + [ID_BOS] + y + [ID_EOS] + [-100] * len_padding
+                labels = [-100] * len(x) + y + [ID_EOS] + [-100] * len_padding
                 input_ids = x + y + [ID_EOS] * (len_padding+1)
                 tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
                 tensor_labels = torch.tensor(labels, dtype=torch.long)
-                position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+                position_ids = get_position_ids(input_ids, ID_BOS, gmask=True, position_encoding_2d=True)
                 attention_mask = get_masks(input_ids, ID_BOS)
                 batch_attention_mask.append(attention_mask)
                 batch_position_ids.append(position_ids)
@@ -331,10 +338,10 @@ class Generator:
                 print("batch_labels_0: {}".format(batch_labels[0]))
                 print("batch_qtext_0: {}".format(batch_qtext[0]))
                 print("batch_qans_0: {}".format(batch_qans[0]))
-            inputs = {"attention_mask": torch.stack(batch_attention_mask).to(device),
-                      "position_ids": torch.stack(batch_position_ids).to(device),
-                      "input_ids": torch.stack(batch_input_ids).to(device),
-                      "labels": torch.stack(batch_labels).to(device),
+            inputs = {"attention_mask": torch.stack(batch_attention_mask).cuda(),
+                      "position_ids": torch.stack(batch_position_ids).cuda(),
+                      "input_ids": torch.stack(batch_input_ids).cuda(),
+                      "labels": torch.stack(batch_labels).cuda(),
                      }
             yield inputs, batch_qtext, batch_qans
 
@@ -354,9 +361,6 @@ chatglm_config.num_layers = num_layers
 # chatglm_config.torch_dtype = "float32"
 chatglm_config.torch_dtype = "float16"
 # chatglm_config.vocab_size =
-MAX_Q_LENGTH = 1024 - 2
-MAX_A_LENGTH = 1024 - 2
-MAX_QA_LENGTH = MAX_Q_LENGTH + MAX_A_LENGTH + 2
 ID_CLS = tokenizer.sp_tokenizer["<ENC>"]
 # ID_SEP = tokenizer.sp_tokenizer["<pad>"]
 ID_PAD = tokenizer.sp_tokenizer["<pad>"]
@@ -388,7 +392,7 @@ else:
     print("model _init_weights ok!")
 
 if use_cuda:
-    model = model.half().to(device)
+    model = model.half().cuda()
     print("model cuda ok!")
 else:
     model = model.bfloat16()
@@ -442,7 +446,7 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
-        if epochs_i == 0 and idx+1 >= len_corpus:
+        if epochs_i == 0 and idx == 0:
             save_model_state(model, chatglm_config, model_save_path)
         # 评估算法/打印日志/存储模型, 1个epoch/到达保存的步数/或者是最后一轮最后一步
         if (evaluate_steps > 0 and global_steps % evaluate_steps == 0) or (epochs_i > 0 and idx == 0) \
@@ -459,7 +463,6 @@ for epochs_i in trange(epochs, desc="epoch"):  # epoch
             if epochs_store and epochs_i - epochs_store[-1][0] >= stop_epochs:
                 break
 
-
 """
 数学算式(加减乘除)微调, max_coeff=10以内
 5epoch/bert_init/no_gMASK/lr5e-5：
@@ -471,6 +474,8 @@ _ + text_1 + [EOS]: best_score_avg: 0(第二轮就报错了)
 ID_CLS + _ + text_1: best_score_avg: 0.55081
 _ + text_1: best_score_avg: 0.55081
 _ + text_1 + [EOS]: best_score_avg: 0(第二轮就response就返回为空, 报错)
+
+总结: 需要use_MASK, attention_mask/position_ids也需要自己生成(自带的ChatGLM只会计算input_ids第一个的);
 
 
 AdamW

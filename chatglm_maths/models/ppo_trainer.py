@@ -687,7 +687,7 @@ class PPOTrainer(BaseTrainer):
             input_ids = x + y + [ID_EOS] * (len_padding + 1)
             tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
             tensor_labels = torch.tensor(labels, dtype=torch.long)
-            position_ids = get_position_ids(input_ids, ID_BOS, gmask=False, position_encoding_2d=True)
+            position_ids = get_position_ids(input_ids, ID_BOS, gmask=True, position_encoding_2d=True)
             attention_mask = get_masks(input_ids, ID_BOS)
             batch_attention_mask.append(attention_mask)
             batch_position_ids.append(position_ids)

@@ -72,7 +72,7 @@ def collect_score(ans, target, predict):
             score_2 = 0.0
         scores = [score_1, score_2]
         return sum(scores) / len(scores)
-def get_position_ids(seq, bos_token_id, gmask=False, position_encoding_2d=True):
+def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
     context_length = len(seq)
@@ -106,7 +106,8 @@ def get_masks(seq, bos_token_id):
 
 # get models
 pretrained_model_name_or_path = "THUDM/chatglm-6b"
-model_save_path = "./fine_tuning_c02"   # python c02_toy_gpu_train_small.py跑的模型
+model_save_path = "./fine_tuning_t10"   # python c02_toy_gpu_train_small.py跑的模型
+MAX_LEN = 128
 def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
     if not os.path.exists(model_save_dir):
@@ -119,13 +120,13 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
     path_model = os.path.join(model_save_dir, model_name)
     torch.save(model.state_dict(), path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
+def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_dir="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:
             path_model = path_dir
         else:
-            path_model = os.path.join(model_save_path, model_name)
+            path_model = os.path.join(model_save_dir, model_name)
         model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
         model.to(device)
         logger.info("******model loaded success******")
@@ -136,8 +137,8 @@ def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device=
 chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
 # model = ChatGLMForCausalLMWithValueHead.from_pretrained(pretrained_model_name_or_path)
-model_chatglm = ChatGLMForConditionalGeneration(chatglm_config)
-load_model_state(model=model_chatglm, model_save_path=model_save_path)
+model_chatglm = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
+# load_model_state(model=model_chatglm, model_save_dir=model_save_path)
 model = ChatGLMForCausalLMWithValueHead(pretrained_model=model_chatglm)
 # del model_chatglm
 # gc.collect()
@@ -175,7 +176,7 @@ for math23k_dict in tqdm(math23k_list, desc="tqdm"):
     # print(query_tensor)
 
     response_tensor = respond_to_batch_new(model_ref, query_tensor,
-                        txt_len=len(query_tensor[0])-2, top_k=0, top_p=1.0)
+                        txt_len=MAX_LEN, top_k=0, top_p=1.0)
     # define a reward for response
     # (this could be any reward such as human feedback or output from another model)
     response_ids = response_tensor.detach().cpu().numpy().tolist()
@@ -192,7 +193,5 @@ for math23k_dict in tqdm(math23k_list, desc="tqdm"):
     train_stats = ppo_trainer.step([query_tensor[0]], [response_tensor[0]], reward)
 
 # model.save_pretrained(model_save_path + "/ppo")
-save_model_state(model.pretrained_model, config=chatglm_config,
+save_model_state(model, config=chatglm_config,
                  model_save_dir=model_save_path + "/ppo")
-
-
