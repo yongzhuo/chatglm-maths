@@ -575,11 +575,16 @@ class GLMBlock(torch.nn.Module):
 
         # Layer norm at the begining of the transformer layer.
         # [seq_len, batch, hidden_size]
-        attention_input = self.input_layernorm(hidden_states)
+        # print(hidden_states)
+        # print(self.input_layernorm.weight)
+        # print(self.input_layernorm.bias)
+        attention_input = self.input_layernorm(hidden_states.to(self.input_layernorm.weight.dtype))
 
         # Self attention.
+        # print(self.attention.query_key_value.weight.dtype)
         attention_outputs = self.attention(
-            attention_input,
+            attention_input.to(torch.float16),
+            # attention_input,
             position_ids,
             attention_mask=attention_mask,
             layer_id=layer_id,
@@ -596,9 +601,10 @@ class GLMBlock(torch.nn.Module):
         alpha = (2 * self.num_layers) ** 0.5
         hidden_states = attention_input * alpha + attention_output
 
-        mlp_input = self.post_attention_layernorm(hidden_states)
+        mlp_input = self.post_attention_layernorm(hidden_states.to(self.input_layernorm.weight.dtype))
 
         # MLP.
+        # mlp_output = self.mlp(mlp_input.to(self.mlp.dense_h_to_4h.weight.dtype))
         mlp_output = self.mlp(mlp_input)
 
         # Second residual connection.
@@ -627,6 +633,10 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
 
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
+
+    def _set_gradient_checkpointing(self, module, value=True):
+        if isinstance(module, (GLMBlock)):
+            module.gradient_checkpointing = value
 
     def _init_weights_org(self, module: nn.Module):
         """Initialize the weights."""
@@ -970,7 +980,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                 all_self_attentions = all_self_attentions + (layer_ret[2 if use_cache else 1],)
 
         # Final layer norm.
-        hidden_states = self.final_layernorm(hidden_states)
+        hidden_states = self.final_layernorm(hidden_states.to(self.final_layernorm.weight.dtype))
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
@@ -1125,14 +1135,12 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         loss = None
         if labels is not None:
             lm_logits = lm_logits.to(torch.float32)
-
             # Shift so that tokens < n predict n
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
             lm_logits = lm_logits.to(hidden_states.dtype)
             loss = loss.to(hidden_states.dtype)
 

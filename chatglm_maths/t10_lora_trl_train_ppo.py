@@ -24,6 +24,7 @@ os.environ["USE_TORCH"] = "1"
 # imports
 from trl import PPOConfig, AutoModelForCausalLMWithValueHead, create_reference_model
 from trl.core import respond_to_batch, top_k_top_p_filtering
+from peft import PeftModel, get_peft_model, LoraConfig
 from peft import prepare_model_for_int8_training
 from transformers import AutoTokenizer
 import torch.nn.functional as F
@@ -45,7 +46,7 @@ class ChatGLMForCausalLMWithValueHead(AutoModelForCausalLMWithValueHead):
                       )
     def __init__(self, pretrained_model, **kwargs):
         super().__init__(pretrained_model, **kwargs)
-        self.is_peft_model = False
+        self.is_peft_model = True
 def respond_to_batch_new(model, queries, txt_len=128, top_k=0, top_p=1.0):
     """Sample text from language model."""
     input_ids = queries
@@ -60,22 +61,21 @@ def respond_to_batch_new(model, queries, txt_len=128, top_k=0, top_p=1.0):
         probs = F.softmax(next_token_logits, dim=-1)
         next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
         start_ids = torch.cat([start_ids, next_token.unsqueeze(-1)], dim=-1)
-        # EOS
         if next_token.detach().cpu().numpy()[0] == tokenizer.eos_token_id:
             return start_ids
     return start_ids[:, -txt_len:]
 def collect_score(ans, target, predict):
-    """   计算得分   """
-    score_1 = macropodus.sim(target, predict)
-    try:
-        predict_sp = predict.split("=")
-        float_1 = eval(ans)
-        float_2 = eval(predict_sp[1])
-        score_2 = min(abs(float_1-float_2)/(float_1+1e-5), 1)
-    except Exception as e:
-        score_2 = 0.0
-    scores = [score_1, score_2]
-    return sum(scores) / len(scores)
+        """   计算得分   """
+        score_1 = macropodus.sim(target, predict)
+        try:
+            predict_sp = predict.split("=")
+            float_1 = eval(ans)
+            float_2 = eval(predict_sp[1])
+            score_2 = min(abs(float_1-float_2)/(float_1+1e-5), 1)
+        except Exception as e:
+            score_2 = 0.0
+        scores = [score_1, score_2]
+        return sum(scores) / len(scores)
 def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
     """  code from model_chatglm.py  """
     # context_length = seq.index(bos_token_id) + 1
@@ -109,8 +109,8 @@ def get_masks(seq, bos_token_id):
     return attention_mask
 
 # get models
-# pretrained_model_name_or_path = "THUDM/chatglm-6b"
-model_save_path = "./fine_tuning_t10"
+pretrained_model_name_or_path = "THUDM/chatglm-6b"
+model_save_path = "./fine_tuning_lora_c00"  #  c00_toy_lora_train_6b.py训练
 MAX_LEN = 128
 def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
     """  仅保存模型参数(推荐使用)  """
@@ -122,39 +122,46 @@ def save_model_state(model, config=None, model_save_dir="./", model_name="pytorc
         config.to_json_file(path_config)
     # save model
     path_model = os.path.join(model_save_dir, model_name)
-    torch.save(model.state_dict(), path_model)
+    # torch.save(model.state_dict(), path_model)
+    grad_params_dict = {k: v.to("cpu")
+                        for k, v in model.named_parameters()
+                        if v.requires_grad == True}
+    torch.save(grad_params_dict, path_model)
     logger.info("******model_save_path is {}******".format(path_model))
-def load_model_state(model, path_dir="", model_name="pytorch_model.bin", device="cpu", model_save_dir="./"):
+def load_model_state(path_dir="", model=None, model_save_dir="./", model_name="pytorch_model.bin", device="cpu", model_save_path="./"):
     """  仅加载模型参数(推荐使用)  """
     try:
         if path_dir:
             path_model = path_dir
         else:
             path_model = os.path.join(model_save_dir, model_name)
-        model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
-        model.to(device)
+        peft_config = LoraConfig.from_pretrained(model_save_dir)
+        peft_config.inference_mode = False
+        model = get_peft_model(model, peft_config)
+        save_dict_lora = torch.load(path_model, map_location=torch.device(device))
+        model.load_state_dict(save_dict_lora, strict=False)
+        # model.to(device)
         logger.info("******model loaded success******")
         logger.info("self.device: {}".format(device))
     except Exception as e:
         logger.info(str(e))
         raise Exception("******load model error******")
+    return model
 
-
+chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "adapter_config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
-ID_PAD = tokenizer.convert_tokens_to_ids(["<pad>"])[0]
-ID_UNK = tokenizer.convert_tokens_to_ids(["<unk>"])[0]
-ID_BOS = tokenizer.convert_tokens_to_ids(["<s>"])[0]
-ID_EOS = tokenizer.convert_tokens_to_ids(["</s>"])[0]
-print(ID_PAD)
-print(ID_UNK)
-print(ID_BOS)
-print(ID_EOS)
-
-
-model_chatglm = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
-# model_chatglm = model_chatglm.quantize(8)
-model_chatglm = model_chatglm.half()
-model_chatglm = prepare_model_for_int8_training(model_chatglm,
+# model = ChatGLMForCausalLMWithValueHead.from_pretrained(pretrained_model_name_or_path)
+model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path,
+                                                        # load_in_8bit=True,
+                                                        # device_map="auto"
+                                                        )
+model.config.use_cache = False
+model.supports_gradient_checkpointing = True
+model.is_parallelizable = False
+model.model_parallel = False
+model = load_model_state(model=model, model_save_dir=model_save_path)
+model = model.half()
+model = prepare_model_for_int8_training(model,
         use_gradient_checkpointing=True,
         output_embedding_layer_name="lm_head",
         #layer_norm_names=[],
@@ -163,8 +170,7 @@ model_chatglm = prepare_model_for_int8_training(model_chatglm,
                           "ln_f"
                           ],
         )
-model = ChatGLMForCausalLMWithValueHead(pretrained_model=model_chatglm)
-
+model = ChatGLMForCausalLMWithValueHead(pretrained_model=model)
 model = model.cuda()
 model_ref = create_reference_model(model)
 # initialize trainer
@@ -203,7 +209,11 @@ for math23k_dict in tqdm(math23k_list, desc="tqdm"):
     # (this could be any reward such as human feedback or output from another model)
     response_ids = response_tensor.detach().cpu().numpy().tolist()
     response_text = tokenizer.decode(response_ids)
+    # print(query_tensor)
     # print(response_ids)
+    # response_tensor = torch.tensor([[ 20005,  20013,  20008,  20008,  20021,  20065,  20013,  20008,  20008,
+    #       20007,  20021,  20065,  20013,  20008,  20007,  20008,  20021,  20065,
+    #       20013,  20007,  20008,  20008,  20021,  20054,  20007, 150001, 150004]], dtype=torch.float32).cuda()
 
     score_cal = collect_score(ans, target_text, response_text)
     reward = [torch.tensor(score_cal)]
@@ -214,27 +224,8 @@ for math23k_dict in tqdm(math23k_list, desc="tqdm"):
     # train_stats = ppo_trainer.step([query_tensor[0][:-2]], [response_tensor[0]], reward)
     train_stats = ppo_trainer.step([query_tensor[0]], [response_tensor[0]], reward)
 
-save_model_state(model, config=None, model_save_dir=model_save_path + "/ppo")
-
-"""
-log
-CUDA SETUP: Loading binary /anaconda3/envs/py371/lib/python3.7/site-packages/bitsandbytes/libbitsandbytes_cuda114_nocublaslt.so...
-2023-04-09 22:42:35,951 - seg_basic.py[line:19] - INFO: path of dict cache is /anaconda3/envs/py371/lib/python3.7/site-packages/macropodus/data/cache/macropodus.cache!
-2023-04-09 22:42:36,206 - textcleaner.py[line:37] - INFO: 'pattern' package not found; tag filters are not available for English
-2023-04-09 22:42:36,207 - word2vec.py[line:19] - INFO: path of w2v cache is /anaconda3/envs/py371/lib/python3.7/site-packages/macropodus/data/cache/word2vec_char.cache!
-20003
-20000
-20001
-20002
-Loading checkpoint shards: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 8/8 [00:11<00:00,  1.44s/it]
-chatglm_maths/models/ppo_trainer.py:223: UserWarning: No dataset is provided. Make sure to set config.batch_size to the correct value before training.
-  UserWarning,
-tqdm:   0%|                                                               | 0/37 [00:00<?, ?it/s]      [tensor(0.0337, dtype=torch.float64)]
-tqdm:   3%|████▍                                                          | 1/37 [00:11<06:55, 11.54s/it]      [tensor(0.0383, dtype=torch.float64)]
-tqdm:   5%|████████▉                                                      | 2/37 [00:21<06:07, 10.50s/it]      [tensor(0.0356
-7 [05:22<00:08,  8.94s/it][tensor(0.0283, dtype=torch.float64)]
-tqdm: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 37/37 [05:31<00:00,  8.96s/it]
-2023-04-09 22:48:57,715 - t10_toy_trl_train_ppo.py[line:127] - INFO: ******model_save_path is ./fine_tuning_t10/ppo/pytorch_model.bin******
+# model.save_pretrained(model_save_path + "/ppo")
+save_model_state(model, config=chatglm_config,
+                 model_save_dir=model_save_path + "/ppo")
 
 
-"""

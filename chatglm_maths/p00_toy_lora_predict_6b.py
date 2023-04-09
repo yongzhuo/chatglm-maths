@@ -60,8 +60,7 @@ else:
     evaluate_steps = int(len_corpus / batch_size / 3) + 1  # 3820
 
 
-# model_save_path = "fine_tuning_lora_kgpoint"
-model_save_path = "fine_tuning_lora_qanalysis"
+model_save_path = "./fine_tuning_lora_c00"
 # os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 quantize_type = None  # None, 16, 8, 4
 seed = 2023
@@ -111,7 +110,8 @@ def load_model_state(path_dir="", model=None, model_save_dir="./", model_name="p
         peft_config = LoraConfig.from_pretrained(model_save_dir)
         peft_config.inference_mode=True
         model = get_peft_model(model, peft_config)
-        model.load_state_dict(torch.load(path_model, map_location=torch.device(device)))
+        sae_dict_lora = torch.load(path_model, map_location=torch.device(device))
+        model.load_state_dict(sae_dict_lora, strict=False)
         # model.to(device)
         logger.info("******model loaded success******")
         logger.info("self.device: {}".format(device))
@@ -283,10 +283,14 @@ class Generator:
                 if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
                     x = x[:MAX_LENGTH_Q]
                     y = y[:MAX_LENGTH_A]
-                    if ID_gMASK not in x:
-                        x += [ID_gMASK]
-                    if ID_BOS not in x:
-                        x += [ID_BOS]
+                if not x:
+                    y = [ID_PAD, ID_BOS]
+                if x[-1] != ID_BOS:
+                    x += [ID_BOS]
+                if not y:
+                    y = [ID_PAD, ID_EOS]
+                if y and y[-1] != ID_EOS:
+                    y += [ID_EOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
@@ -368,17 +372,18 @@ model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or
 # print("prepare_model_for_int8_training!")
 # model.gradient_checkpointing_enable()
 # model.enable_input_require_grads()
-# model.config.use_cache = False
+# model.disable_input_require_grads()
+model.config.use_cache = False
+model.supports_gradient_checkpointing = False
 model.is_parallelizable = False
 model.model_parallel = False
-model.supports_gradient_checkpointing = False
 class CastOutputToFloat(nn.Sequential):
     def forward(self, x): return super().forward(x).to(torch.float32)
 # model.is_parallelizable = False
 # model.model_parallel = False
 model.lm_head = CastOutputToFloat(model.lm_head)
 model = load_model_state(model=model, model_save_dir=model_save_path)
-model = model.bfloat16()
+# model.eval()
 
 def predict(text):
     prompt = text  # generate_prompt(text)
@@ -389,7 +394,8 @@ def predict(text):
         top_p=0.95,
         top_k=50,
         num_beams=1,
-        do_sample=True
+        do_sample=True,
+        penalty_alpha=1.5,
     )
     with torch.no_grad():
         generation_output = model.generate(
@@ -415,6 +421,7 @@ def predict(text):
 # else:
 #     model = model.bfloat16()
 
+model = model.bfloat16()
 print("model.chat start")
 predict(generator_line)
 

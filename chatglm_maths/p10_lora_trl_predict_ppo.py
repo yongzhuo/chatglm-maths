@@ -167,26 +167,18 @@ def print_named_parameters(model, use_print_data=True):
 
 # get models
 pretrained_model_name_or_path = "THUDM/chatglm-6b"
-model_save_path = "fine_tuning_t10"   # python c02_toy_gpu_train_small.py跑的模型
+model_save_path = "fine_tuning_lora_c00"  #  c00_toy_lora_train_6b.py训练
+
 model_save_path_ppo = os.path.join(model_save_path, "ppo")
 MAX_LEN=256
-# chatglm_config = ChatGLMConfig.from_json_file(os.path.join(model_save_path, "config.json"))
 tokenizer = ChatGLMTokenizer.from_pretrained(pretrained_model_name_or_path)
-model_chatglm = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
-# model_chatglm = ChatGLMForConditionalGeneration(chatglm_config)
-# model_chatglm = model_chatglm.half()
-model = ChatGLMForCausalLMWithValueHead(pretrained_model=model_chatglm)
-# model = ChatGLMForCausalLMWithValueHead.from_pretrained(model_save_path_ppo)
+model = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
+model = load_model_state(model=model, model_save_dir=model_save_path)
+model = ChatGLMForCausalLMWithValueHead(pretrained_model=model)
 model = load_model_state(model, model_save_dir=model_save_path_ppo)
 model = model.half().cuda()
 # model = model.bfloat16()
-print_named_parameters(model_chatglm)
-# original_text = "1+1="
-# response, history = model.pretrained_model.chat(tokenizer=tokenizer, query=original_text, history=[], max_length=256,
-#                                num_beams=1, do_sample=True, top_p=0.7, temperature=0.95,
-#                                )
-# res_end = str(response).encode("utf-8", "ignore").decode("utf-8", "ignore")
-# print(res_end)
+print_named_parameters(model)
 # print("###############")
 original_text = "1+1="
 query_tensor = tokenizer.encode(original_text, return_tensors="pt").cuda()
@@ -198,7 +190,8 @@ response_text = tokenizer.decode(response_ids)
 print(response_text[0].replace(" ",""))
 
 """
+logs
 tensor([[ 20005,  20009,  20065,  20009,  20054, 150001, 150004]],
        device='cuda:0')
-The答案The我I"我II作为一名我"I我不知道作为一名我不
+ThesumCertainlyYesYesYesYesYesYesYes
 """

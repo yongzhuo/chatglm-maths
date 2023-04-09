@@ -298,10 +298,14 @@ class Generator:
                 if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
                     x = x[:MAX_LENGTH_Q]
                     y = y[:MAX_LENGTH_A]
-                    if ID_gMASK not in x:
-                        x += [ID_gMASK]
-                    if ID_BOS not in x:
-                        x += [ID_BOS]
+                if not x:
+                    y = [ID_PAD, ID_BOS]
+                if x[-1] != ID_BOS:
+                    x += [ID_BOS]
+                if not y:
+                    y = [ID_PAD, ID_EOS]
+                if y and y[-1] != ID_EOS:
+                    y += [ID_EOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)
