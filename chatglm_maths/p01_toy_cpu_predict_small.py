@@ -281,18 +281,17 @@ class Generator:
                     x = prompt[0] + "\n" + x + "\n" + prompt[1] + "\n"
                 x_encode = tokenizer.encode(x)  # encode自己多生成了一个空格_
                 y_encode = tokenizer.encode(y)[:-2]
-                if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
-                    x = x[:MAX_LENGTH_Q]
-                    y = y[:MAX_LENGTH_A]
-                if not x:
-                    y = [ID_PAD, ID_BOS]
-                if x[-1] != ID_BOS:
-                    x += [ID_BOS]
-                if not y:
-                    y = [ID_PAD, ID_EOS]
-                if y and y[-1] != ID_EOS:
-                    y += [ID_EOS]
-
+                if len(x_encode) + len(y_encode) > (MAX_LENGTH_Q + MAX_LENGTH_A):
+                    x_encode = x_encode[:MAX_LENGTH_Q]
+                    y_encode = y_encode[:MAX_LENGTH_A]
+                if not x_encode:
+                    y_encode = [ID_PAD, ID_BOS]
+                if x_encode[-1] != ID_BOS:
+                    x_encode += [ID_BOS]
+                if not y_encode:
+                    y_encode = [ID_PAD, ID_EOS]
+                if y_encode and y[-1] != ID_EOS:
+                    y_encode += [ID_EOS]
                 batch_xds_0.append(x_encode)
                 batch_xds_1.append(y_encode)
                 batch_qtext.append(x)

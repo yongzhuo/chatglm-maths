@@ -91,6 +91,10 @@ outputs = model(**inputs, labels=inputs["input_ids"])
 """
 
 
+ID_BOS = 130004
+ID_EOS = 130005
+
+
 class PPOTrainer(BaseTrainer):
     """
     The PPOTrainer uses Proximal Policy Optimization to optimise language models.
@@ -639,8 +643,6 @@ class PPOTrainer(BaseTrainer):
         return input_data
 
     def prepare_model_inputs(self, queries: torch.Tensor, responses: torch.Tensor):
-        ID_BOS = 150004
-        ID_EOS = 150005
         def get_position_ids(seq, bos_token_id=ID_BOS, gmask=False, position_encoding_2d=True):
             """  code from model_chatglm.py  """
             # context_length = seq.index(bos_token_id) + 1
@@ -759,8 +761,6 @@ class PPOTrainer(BaseTrainer):
                     # if attention_mask[j, 0] == 0:  # offset left padding
                     #     start += attention_mask[j, :].nonzero()[0]
                     # end = start + len(response_batch[j])
-                    ID_BOS = 150004
-                    ID_EOS = 150005
                     start = input_ids[j].detach().cpu().numpy().tolist().index(ID_BOS)
                     end = input_ids[j].detach().cpu().numpy().tolist().index(ID_EOS)
 

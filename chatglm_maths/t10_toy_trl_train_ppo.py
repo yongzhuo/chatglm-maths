@@ -109,7 +109,7 @@ def get_masks(seq, bos_token_id):
     return attention_mask
 
 # get models
-# pretrained_model_name_or_path = "THUDM/chatglm-6b"
+pretrained_model_name_or_path = "THUDM/chatglm-6b"
 model_save_path = "./fine_tuning_t10"
 MAX_LEN = 128
 def save_model_state(model, config=None, model_save_dir="./", model_name="pytorch_model.bin", config_name="config.json"):
@@ -151,9 +151,13 @@ print(ID_BOS)
 print(ID_EOS)
 
 
-model_chatglm = ChatGLMForConditionalGeneration.from_pretrained(pretrained_model_name_or_path)
+model_chatglm = ChatGLMForConditionalGeneration.from_pretrained(
+    pretrained_model_name_or_path,
+    # load_in_8bit=True,
+    # device_map="auto"
+    )
 # model_chatglm = model_chatglm.quantize(8)
-model_chatglm = model_chatglm.half()
+# model_chatglm = model_chatglm.half()
 model_chatglm = prepare_model_for_int8_training(model_chatglm,
         use_gradient_checkpointing=True,
         output_embedding_layer_name="lm_head",
@@ -177,6 +181,7 @@ ppo_config = PPOConfig(model_name="ChatGLMForCausalLMWithValueHead",
                        batch_size=1,
                        max_grad_norm=1,
                        seed=2023,
+                       # log_with="tensorboard"
                        )
 # create a ppo trainer
 ppo_trainer = PPOTrainer(ppo_config, model, model_ref, tokenizer)
@@ -235,6 +240,5 @@ tqdm:   5%|████████▉                                          
 7 [05:22<00:08,  8.94s/it][tensor(0.0283, dtype=torch.float64)]
 tqdm: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 37/37 [05:31<00:00,  8.96s/it]
 2023-04-09 22:48:57,715 - t10_toy_trl_train_ppo.py[line:127] - INFO: ******model_save_path is ./fine_tuning_t10/ppo/pytorch_model.bin******
-
-
 """
+
