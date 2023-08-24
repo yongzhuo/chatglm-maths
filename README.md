@@ -19,10 +19,10 @@ chatglm-6b微调/LORA/PPO/推理, 样本为自动生成的整数/小数加减乘
 
 ## 微调数据
 1. 原始数据来自[https://github.com/LYH-YF/MWPToolkit](https://github.com/LYH-YF/MWPToolkit)
-```shell
-处理后的微调数据(算式/解方程)-MWP: [https://huggingface.co/datasets/Macropodus/MWP-Instruct](https://huggingface.co/datasets/Macropodus/MWP-Instruct)
-```
-2. 大数加减乘除来自: [https://github.com/liutiedong/goat.git ](https://github.com/liutiedong/goat.git )
+
+      处理后的微调数据(算式/解方程)-MWP: [https://huggingface.co/datasets/Macropodus/MWP-Instruct](https://huggingface.co/datasets/Macropodus/MWP-Instruct)
+
+3. 大数加减乘除来自: [https://github.com/liutiedong/goat.git ](https://github.com/liutiedong/goat.git )
 
 
 ## LoRA权重
