@@ -1,13 +1,6 @@
 # chatglm-maths
 chatglm-6b微调/LORA/PPO/推理, 样本为自动生成的整数/小数加减乘除运算, 可gpu/cpu
 
-
-## 数据集-中文
- - [https://github.com/tatsu-lab/stanford_alpaca](https://github.com/tatsu-lab/stanford_alpaca)
- - [https://github.com/LianjiaTech/BELLE](https://github.com/LianjiaTech/BELLE)
- - [https://github.com/carbonz0/alpaca-chinese-dataset](https://github.com/carbonz0/alpaca-chinese-dataset)
-
-
 ## 踩坑
 ```python
 1. eps=1e-5(不要改小), 半精度float16, 以及LN采用的是Post-LN(泛化性更好) + DeepNorm, 【害, Attention前也有LN】目的是大模型为了防止梯度溢出等;
@@ -23,6 +16,29 @@ chatglm-6b微调/LORA/PPO/推理, 样本为自动生成的整数/小数加减乘
 5. 低秩自适应LORA, RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
    尝试 transformers升级到最新, get_peft_model后再.cuda(), device_map={'':torch.cuda.current_device()}, 
 ```
+
+## 微调数据
+1. 原始数据来自[https://github.com/LYH-YF/MWPToolkit](https://github.com/LYH-YF/MWPToolkit)
+```shell
+处理后的微调数据(算式/解方程)-MWP: [https://huggingface.co/datasets/Macropodus/MWP-Instruct](https://huggingface.co/datasets/Macropodus/MWP-Instruct)
+```
+2. 大数加减乘除来自: [https://github.com/liutiedong/goat.git ](https://github.com/liutiedong/goat.git )
+
+
+## LoRA权重
+```shell
+Baichuan-7B-GPT4ForALL: https://huggingface.co/Macropodus/MWP-Instruct
+Bloomz-7B-GPT4ForALL: https://huggingface.co/Macropodus/MWP-Instruct
+ChatGLM-6B-GPT4ForALL: https://huggingface.co/Macropodus/MWP-Instruct
+LlaMA-7B-GPT4ForALL: https://huggingface.co/Macropodus/MWP-Instruct
+ChatGLM-6B-MWP: https://huggingface.co/Macropodus/MWP-Instruct
+```
+
+## 数据集-中文
+ - [https://github.com/tatsu-lab/stanford_alpaca](https://github.com/tatsu-lab/stanford_alpaca)
+ - [https://github.com/LianjiaTech/BELLE](https://github.com/LianjiaTech/BELLE)
+ - [https://github.com/carbonz0/alpaca-chinese-dataset](https://github.com/carbonz0/alpaca-chinese-dataset)
+   
 
 ## 环境配置
 ```shell
